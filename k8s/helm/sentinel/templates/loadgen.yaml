@@ -1,0 +1,44 @@
+{{- if and .Values.loadgen.enabled .Values.demoFleet.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel.fullname" . }}-loadgen
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: loadgen
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" (dict "root" $ "component" "loadgen") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.podLabels" (dict "root" $ "component" "loadgen") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/loadgen-config.yaml") . | sha256sum }}
+    spec:
+      containers:
+        - name: k6
+          image: {{ .Values.loadgen.image }}
+          args: ["run", "/scripts/baseline.js"]
+          env:
+            - name: TARGETS
+              value: "http://{{ include "sentinel.fleetHost" (dict "root" $ "name" "api-gateway") }}:8080,http://{{ include "sentinel.fleetHost" (dict "root" $ "name" "search-service") }}:8080"
+            - name: RPS
+              value: {{ .Values.loadgen.rps | quote }}
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "sentinel.fullname" . }}-loadgen
+{{- end }}

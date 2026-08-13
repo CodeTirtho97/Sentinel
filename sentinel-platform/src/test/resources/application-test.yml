@@ -1,0 +1,38 @@
+spring:
+  jpa:
+    hibernate:
+      # Flyway owns the schema in tests too. Any drift between the entities and the migrations must
+      # fail here rather than in production.
+      ddl-auto: validate
+
+sentinel:
+  # Thirty days of fabricated history would make every "how many incidents exist" assertion in this
+  # suite a lie. The seeder is exercised by its own test, which turns it on deliberately.
+  demo-seed: false
+  evaluation:
+    # The evaluator has no Prometheus to talk to in this suite. Nothing enables an SLO, so the cycle
+    # returns before it ever queries — this just keeps it from spinning.
+    interval: 1h
+  correlation:
+    window: 5m
+    auto-resolve-after: 10m
+    dedupe-ttl: 1h
+    recent-retention: 10m
+    # The schedulers are driven explicitly by the tests that care, using the mutable clock. Leaving
+    # them on a timer would reintroduce exactly the timing flake the injected clock removes.
+    auto-resolve-scan-interval: 1h
+  metrics:
+    gauge-refresh-interval: 1h
+    # Deliberately dead, and deliberately explicit. The default points at localhost:9090, so on any
+    # machine where the Compose stack happens to be running the suite would quietly talk to it —
+    # which is how ReadinessProbeIT passed locally and would have failed in CI, in the direction
+    # that hides a bug rather than reveals one. Nothing here needs Prometheus: no SLO is enabled and
+    # the evaluator's interval is an hour.
+    prometheus-base-url: http://127.0.0.1:1
+
+logging:
+  level:
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN
+    org.apache.kafka: WARN
+    com.sentinel: DEBUG

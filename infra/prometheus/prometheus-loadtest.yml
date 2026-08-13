@@ -1,0 +1,30 @@
+# Load-test scrape config. Same recording rules, different targets.
+#
+# The demo fleet is dropped entirely: at 1000 synthetic services the eight real containers add
+# nothing to the measurement and their JVMs compete with the thing being measured for the laptop's
+# CPU, which is the one variable a benchmark must not leave uncontrolled.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # One target, N services' worth of series. This is what makes 1000 services measurable without
+  # 1000 containers.
+  - job_name: synthetic
+    metrics_path: /metrics
+    # A 2000-service exposition is a large document; the default 10s timeout is tight for it, and a
+    # scrape that times out shows up as missing data rather than as an error.
+    scrape_timeout: 14s
+    static_configs:
+      - targets:
+          - synthetic-exporter:8080
+
+  # Sentinel is the subject of the measurement: sentinel_slo_cycle_duration_seconds comes from here.
+  - job_name: sentinel
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - sentinel:8080

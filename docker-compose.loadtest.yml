@@ -1,0 +1,64 @@
+# Load-test overlay. Used as:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.loadtest.yml up -d <services>
+#
+# It does three things: adds the synthetic exporter, repoints Prometheus at it, and puts Sentinel
+# on production SLO windows instead of the demo's compressed ones.
+#
+# The demo fleet and the load generator are deliberately NOT started under this overlay. Eight JVMs
+# and a k6 container competing for the same laptop CPU is the fastest way to measure the machine
+# instead of the evaluator. Bring up only what the measurement needs — `make load-test-up` does.
+name: sentinel
+
+services:
+  synthetic-exporter:
+    build:
+      context: .
+      dockerfile: synthetic-exporter/Dockerfile
+    image: sentinel/synthetic-exporter:local
+    restart: unless-stopped
+    environment:
+      # The headline knob. Ramp 100 / 250 / 500 / 1000 / 2000 to find the ceiling.
+      SYNTHETIC_SERVICES: ${SYNTHETIC_SERVICES:-100}
+      SYNTHETIC_CHAIN_LENGTH: ${SYNTHETIC_CHAIN_LENGTH:-5}
+      SYNTHETIC_RPS: ${SYNTHETIC_RPS:-20}
+      SYNTHETIC_ERROR_RATE: ${SYNTHETIC_ERROR_RATE:-0.0005}
+      # Starts healthy. The breach storm is triggered at a known instant via POST /breach.
+      SYNTHETIC_BREACH_FRACTION: ${SYNTHETIC_BREACH_FRACTION:-0.0}
+    # Rendering 2000 services' worth of exposition needs headroom the 400m fleet limit does not
+    # give, and an exporter being GC-throttled would understate the evaluator's real load.
+    mem_limit: 1g
+    ports:
+      - "8089:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/status"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  prometheus:
+    volumes:
+      - ./infra/prometheus/prometheus-loadtest.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/rules:/etc/prometheus/rules:ro
+
+  sentinel:
+    environment:
+      # Production windows, not the demo's compressed ones: the ceiling being measured is the one a
+      # real deployment would hit, and 1h/6h/3d range selectors are materially more expensive for
+      # Prometheus to evaluate than 2m/5m/15m.
+      SPRING_PROFILES_ACTIVE: loadtest
+      DB_URL: jdbc:postgresql://postgres:5432/sentinel
+      DB_USER: sentinel
+      DB_PASSWORD: sentinel
+      PROMETHEUS_URL: http://prometheus:9090
+      KAFKA_BOOTSTRAP: redpanda:9092
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      SHARD_INDEX: ${SHARD_INDEX:-0}
+      SHARD_COUNT: ${SHARD_COUNT:-1}
+      # Thirty days of fabricated history would pollute the incident counts the measurements read.
+      DEMO_SEED: "false"
+    depends_on:
+      synthetic-exporter:
+        condition: service_healthy

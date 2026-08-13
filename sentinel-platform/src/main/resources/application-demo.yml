@@ -1,0 +1,57 @@
+# Compressed windows so a cascade is visible inside two minutes.
+#
+# On the production 1h/6h/3d windows the first CRITICAL breach lands roughly three minutes after
+# chaos starts, and on a freshly started stack rate() has only seconds of history so the burn rate
+# spikes for the wrong reason. Neither makes a demo you can rehearse. Production defaults live in
+# application.yml and are what a real deployment runs.
+sentinel:
+  evaluation:
+    # A 2m window cannot be 75% populated 45s into a demo. Lowered deliberately, not by accident.
+    minimum-coverage: 0.3
+    minimum-events: 60
+  slo:
+    windows:
+      critical:
+        long-window: 2m
+        short-window: 1m
+        burn-threshold: 14.4
+      high:
+        long-window: 5m
+        short-window: 2m
+        burn-threshold: 6.0
+      medium:
+        long-window: 15m
+        short-window: 5m
+        burn-threshold: 1.0
+  correlation:
+    # Compressed alongside the SLO windows, for the same reason.
+    #
+    # The cascade lands inside about 30 seconds, so a 2m window is comfortably wide enough to hold
+    # the whole thing while being narrow enough that two genuinely unrelated failures do not get
+    # stapled together just because they happened in the same demo.
+    window: 2m
+    # Two times the window, matching the production ratio. This is what makes recovery visible:
+    # on the 10m production default, `reset-chaos.sh` is followed by ten minutes of staring at an
+    # incident that is plainly over, which is longer than the entire demo.
+    auto-resolve-after: 4m
+    # The sweep has to be well inside the resolve threshold or the incident lingers for up to a
+    # scan interval past its deadline, which reads as the auto-resolver not working.
+    auto-resolve-scan-interval: 15s
+
+  # Where the fleet lives, so the visualiser at /demo.html can seed SLOs, inject failure and reset
+  # without anyone touching a terminal. Read only by DemoControlController, which exists only under
+  # this profile — a real deployment has no endpoint that can break its own services.
+  demo:
+    fleet:
+      api-gateway: http://api-gateway:8080
+      checkout-service: http://checkout-service:8080
+      cart-service: http://cart-service:8080
+      payment-service: http://payment-service:8080
+      fraud-service: http://fraud-service:8080
+      ledger-service: http://ledger-service:8080
+      search-service: http://search-service:8080
+      catalog-service: http://catalog-service:8080
+
+logging:
+  level:
+    com.sentinel.slo.SloEvaluator: DEBUG

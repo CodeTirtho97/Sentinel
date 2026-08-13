@@ -1,0 +1,244 @@
+name: sentinel
+
+x-fleet: &fleet
+  build:
+    context: .
+    dockerfile: demo-fleet/Dockerfile
+  image: sentinel/demo-fleet:local
+  restart: unless-stopped
+  # Eight JVMs need a ceiling. Without one, MaxRAMPercentage=75 in the Dockerfile sizes each heap
+  # against the host's whole allocation, which is harmless at four instances and thrashing at eight.
+  mem_limit: 400m
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+    start_period: 20s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sentinel
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/rules:/etc/prometheus/rules:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Redpanda, not Kafka + ZooKeeper: one container, Kafka-API compatible, ~200MB.
+  # The application uses the standard Kafka client, so "Kafka" stays an honest claim.
+  redpanda:
+    image: redpandadata/redpanda:v24.1.7
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    # The correlation window is a hot 5-minute set that expires by TTL; losing it on
+    # restart costs at most one correlation window, so persistence is not wanted here.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      # 3001, not Grafana's usual 3000: the demo page is the front door and takes that port, so
+      # there is one address to remember and everything else is a link away from it. Grafana still
+      # listens on 3000 inside the container — only the host mapping moved.
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
+  # ONE image, eight instances — not eight projects. Two deliberately disconnected trees:
+  #
+  #   ORDER PATH   api-gateway -> checkout -> {cart, payment}; cart -> payment;
+  #                payment -> fraud -> ledger
+  #   BROWSE PATH  search -> catalog
+  #
+  # The browse path exists so the demo can show two unrelated failures staying two incidents.
+  # Without a second tree there is no way to prove correlation is not simply grouping everything.
+  api-gateway:
+    <<: *fleet
+    environment:
+      SERVICE_NAME: api-gateway
+      DOWNSTREAM: http://checkout-service:8080
+    ports:
+      - "8081:8080"
+    depends_on:
+      - checkout-service
+
+  checkout-service:
+    <<: *fleet
+    environment:
+      SERVICE_NAME: checkout-service
+      DOWNSTREAM: http://cart-service:8080,http://payment-service:8080
+    ports:
+      - "8082:8080"
+    depends_on:
+      - cart-service
+      - payment-service
+
+  cart-service:
+    <<: *fleet
+    environment:
+      SERVICE_NAME: cart-service
+      DOWNSTREAM: http://payment-service:8080
+    ports:
+      - "8083:8080"
+    depends_on:
+      - payment-service
+
+  payment-service:
+    <<: *fleet
+    environment:
+      SERVICE_NAME: payment-service
+      DOWNSTREAM: http://fraud-service:8080
+    ports:
+      - "8084:8080"
+    depends_on:
+      - fraud-service
+
+  fraud-service:
+    <<: *fleet
+    environment:
+      SERVICE_NAME: fraud-service
+      DOWNSTREAM: http://ledger-service:8080
+    ports:
+      - "8085:8080"
+    depends_on:
+      - ledger-service
+
+  # The leaf of the order path, and the service the cascade demo breaks.
+  ledger-service:
+    <<: *fleet
+    environment:
+      SERVICE_NAME: ledger-service
+      DOWNSTREAM: ""
+    ports:
+      - "8086:8080"
+
+  search-service:
+    <<: *fleet
+    environment:
+      SERVICE_NAME: search-service
+      DOWNSTREAM: http://catalog-service:8080
+    ports:
+      - "8087:8080"
+    depends_on:
+      - catalog-service
+
+  # The leaf of the browse path. Breaking this and ledger together is the two-incident demo.
+  catalog-service:
+    <<: *fleet
+    environment:
+      SERVICE_NAME: catalog-service
+      DOWNSTREAM: ""
+    ports:
+      - "8088:8080"
+
+  sentinel:
+    build:
+      context: .
+      dockerfile: sentinel-platform/Dockerfile
+    image: sentinel/platform:local
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-demo}
+      DB_URL: jdbc:postgresql://postgres:5432/sentinel
+      DB_USER: sentinel
+      DB_PASSWORD: sentinel
+      PROMETHEUS_URL: http://prometheus:9090
+      KAFKA_BOOTSTRAP: redpanda:9092
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      SHARD_INDEX: "0"
+      SHARD_COUNT: "1"
+    ports:
+      # The front door. http://localhost:3000 opens the demo page; Grafana, Prometheus and Swagger
+      # are all one link from there. Still 8080 inside the container, so nothing on the Compose
+      # network — Prometheus scraping, the k6 scripts, the health check — has to know about this.
+      - "3000:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  # Without constant traffic rate() returns nothing and the whole system silently does nothing.
+  # Both entry points are driven: the order path through api-gateway, the browse path through
+  # search-service. An untrafficked tree cannot breach, so it could never be part of the demo.
+  loadgen:
+    image: grafana/k6:0.52.0
+    volumes:
+      - ./loadtest/k6:/scripts:ro
+    environment:
+      TARGETS: http://api-gateway:8080,http://search-service:8080
+      RPS: "30"
+    command: ["run", "/scripts/baseline.js"]
+    restart: unless-stopped
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+      search-service:
+        condition: service_healthy

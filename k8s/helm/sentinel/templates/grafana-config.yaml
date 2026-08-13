@@ -1,0 +1,53 @@
+{{/*
+Both dashboards provisioned from ConfigMaps, so they exist on first boot with zero clicking — the
+same guarantee the Compose path makes. Anonymous admin, no login form: a reviewer should not be
+asked for credentials to look at a graph.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sentinel.fullname" . }}-grafana-provisioning
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        # The dashboards reference this uid, so it must not change between the two deployment paths
+        # or every panel comes up with a broken datasource.
+        uid: sentinel-prometheus
+        type: prometheus
+        access: proxy
+        url: http://{{ include "sentinel.prometheusHost" . }}:9090
+        isDefault: true
+        editable: false
+        jsonData:
+          timeInterval: {{ .Values.prometheus.scrapeInterval }}
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: sentinel
+        orgId: 1
+        folder: Sentinel
+        type: file
+        disableDeletion: true
+        updateIntervalSeconds: 30
+        allowUiUpdates: false
+        options:
+          path: /etc/grafana/provisioning/dashboards
+          foldersFromFilesStructure: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sentinel.fullname" . }}-grafana-dashboards
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+data:
+  # Copies of infra/grafana/provisioning/dashboards/*.json, for the same reason as the recording
+  # rules: Helm cannot read above the chart root. `make k8s-sync` and the CI diff keep them honest.
+  {{- range $path, $_ := .Files.Glob "files/dashboards/*.json" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}

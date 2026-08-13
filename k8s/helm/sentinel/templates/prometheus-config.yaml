@@ -1,0 +1,115 @@
+{{/*
+Prometheus, with pod service discovery instead of the static target list the Compose stack uses.
+
+That difference is the point of this file. Under Compose the eight fleet targets are written out by
+hand, and a ninth service means editing prometheus.yml. Here a pod is scraped because it carries
+prometheus.io/scrape=true, so scaling the fleet, rolling it, or turning on sharding changes the
+scrape set with no configuration edit and no restart.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "sentinel.fullname" . }}-prometheus
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+---
+{{/*
+Read-only, and only the object kinds discovery actually reads. A ClusterRole rather than a Role
+because kubernetes_sd_configs watches at cluster scope even when every target is in one namespace.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "sentinel.fullname" . }}-prometheus
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, endpoints, nodes]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "sentinel.fullname" . }}-prometheus
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "sentinel.fullname" . }}-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "sentinel.fullname" . }}-prometheus
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sentinel.fullname" . }}-prometheus
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      # sentinel.metrics.scrape-interval must match this: Sentinel converts a sample count into
+      # window coverage, and a mismatch makes a fully populated window look partial.
+      scrape_interval: {{ .Values.prometheus.scrapeInterval }}
+      evaluation_interval: {{ .Values.prometheus.scrapeInterval }}
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Release.Namespace }}]
+        relabel_configs:
+          # Opt in by annotation. Everything else in the namespace — Postgres, Redis, Redpanda, the
+          # load generator — is simply not annotated and is therefore never scraped.
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # Rewrites the address to the annotated port. Without this the target is the pod IP on
+          # whatever port discovery happened to pick, which for a multi-port pod is a coin flip.
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          # A terminating pod keeps its IP for a few seconds after it stops serving. Scraping it
+          # produces a gap that looks like an outage in the burn rate.
+          - source_labels: [__meta_kubernetes_pod_phase]
+            action: drop
+            regex: (Succeeded|Failed|Pending)
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            target_label: component
+          # Discovery would call every one of these `kubernetes-pods`, and the internals dashboard
+          # selects the JVM panels with job="sentinel" — the name the Compose scrape config gives
+          # it. Rewriting job from the component label keeps one set of dashboard JSON working on
+          # both deployment paths instead of forking it.
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: replace
+            target_label: job
+            regex: (.+)
+        # NOTE: the `service` label the recording rules aggregate by is emitted by the applications
+        # themselves — demo-fleet tags every meter with SERVICE_NAME. It is deliberately not
+        # relabelled from a Kubernetes object name here: the metric label is the domain identity
+        # used by the dependency graph and the correlation key, and rebinding it to a pod or Service
+        # name would silently break correlation the moment the two diverged.
+
+  # The same rules the Compose stack runs. Helm cannot read outside the chart directory, so this is
+  # a copy of infra/prometheus/rules/slo-recording-rules.yml rather than a reference to it — which
+  # is exactly the kind of duplication that silently rots. `make k8s-sync` refreshes it and CI
+  # diffs the two, so a divergence fails the build instead of producing a Kubernetes deployment
+  # whose burn rates quietly disagree with the Compose one.
+  slo-recording-rules.yml: |
+{{ .Files.Get "files/slo-recording-rules.yml" | indent 4 }}

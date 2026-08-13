@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MAVEN_ARGS: -B -ntp
+
+jobs:
+  # Fast feedback: formatting and the Docker-free unit suite. Kept separate from the integration
+  # job so a misplaced brace fails in ninety seconds rather than after a Testcontainers startup.
+  build:
+    name: Build and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Check formatting
+        run: ./mvnw $MAVEN_ARGS spotless:check
+
+      - name: Unit tests
+        run: ./mvnw $MAVEN_ARGS test
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: unit-test-reports
+          path: '**/target/surefire-reports/**'
+
+  # Mutation testing on slo.math and nothing else. Line coverage there proves a burn-rate
+  # comparison executed; only a surviving `>=` -> `>` mutant proves the boundary is asserted, and
+  # that boundary is what makes CRITICAL fire at exactly 14.4.
+  mutation:
+    name: Mutation testing (slo.math)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: PIT
+        run: >
+          ./mvnw $MAVEN_ARGS -pl sentinel-platform test-compile
+          org.pitest:pitest-maven:mutationCoverage
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pit-report
+          path: sentinel-platform/target/pit-reports/**
+
+  # Testcontainers against real Postgres, Redpanda and Redis. Docker is preinstalled on
+  # ubuntu-latest, so this needs no services: block — the containers are started by the test code.
+  integration:
+    name: Integration tests and coverage gate
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Pulled up front so a slow registry shows up as a pull step rather than as a mysterious
+      # Testcontainers startup timeout inside the suite.
+      - name: Pre-pull test images
+        run: |
+          docker pull postgres:16-alpine &
+          docker pull redpandadata/redpanda:v24.1.7 &
+          docker pull redis:7.4-alpine &
+          wait
+
+      # verify runs failsafe and then the JaCoCo gate (line >= 75%, branch >= 65%).
+      - name: Integration tests + JaCoCo gate
+        run: ./mvnw $MAVEN_ARGS verify
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: sentinel-platform/target/site/jacoco/**
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: integration-test-reports
+          path: '**/target/failsafe-reports/**'
+
+  # The claim in the README is that a stranger can clone and run `make demo`. This checks the
+  # images actually build from a clean checkout, which is the half of that claim CI can verify
+  # without standing the whole stack up.
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build images
+        run: |
+          docker build -f sentinel-platform/Dockerfile -t sentinel/platform:ci .
+          docker build -f demo-fleet/Dockerfile -t sentinel/demo-fleet:ci .
+          docker build -f synthetic-exporter/Dockerfile -t sentinel/synthetic-exporter:ci .
+
+      - name: Validate Compose files
+        run: |
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose.yml -f docker-compose.loadtest.yml config -q
+
+  # Kubernetes is the secondary path, so this does not stand a cluster up — that is `make kind-demo`
+  # locally. What CI can check cheaply is that the chart renders and that its copies of the
+  # recording rules, the dashboards and the k6 script have not drifted from the originals in infra/
+  # and loadtest/. Helm cannot read above the chart root, so those files exist twice; this is what
+  # keeps the second copy honest.
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Chart assets match infra/ and loadtest/
+        run: ./scripts/k8s-sync.sh --check
+
+      - name: Lint
+        run: |
+          helm lint ./k8s/helm/sentinel
+          helm lint ./k8s/helm/sentinel --set sentinel.sharding.enabled=true --set keda.enabled=true
+
+      # Both shapes: the default Deployment and the sharded StatefulSet. A template that only ever
+      # renders one of them is a template that breaks the first time anyone flips the flag.
+      - name: Render
+        run: |
+          mkdir -p rendered
+          helm template sentinel ./k8s/helm/sentinel -n sentinel > rendered/default.yaml
+          helm template sentinel ./k8s/helm/sentinel -n sentinel \
+            --set sentinel.sharding.enabled=true --set keda.enabled=true > rendered/sharded.yaml
+
+      # Renders-without-error is a low bar; this checks the output is actually valid Kubernetes.
+      # KEDA's ScaledObject is a CRD with no published schema here, hence -ignore-missing-schemas.
+      - name: Validate against the Kubernetes schema
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar xz kubeconform
+          ./kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.31.0 \
+            rendered/default.yaml rendered/sharded.yaml

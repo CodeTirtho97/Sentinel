@@ -1,0 +1,107 @@
+{{- if not .Values.sentinel.sharding.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel.fullname" . }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sentinel
+spec:
+  # One. Not a placeholder, and not timidity.
+  #
+  # The evaluator is an @Scheduled loop over every enabled SLO. Two replicas at shardCount=1 both
+  # own every SLO, so each cycle is evaluated twice, and the burn rate for a service is computed
+  # against the same recording-rule series by two processes that then both publish a breach.
+  # Deterministic event IDs and the partial unique index mean that is *survivable* — but surviving
+  # duplicated work is not the same as scaling, and the wasted Prometheus queries are real.
+  #
+  # Scaling out is sentinel.sharding.enabled=true, which renders a StatefulSet whose pods take a
+  # distinct SHARD_INDEX from their ordinal. See k8s/README.md.
+  replicas: 1
+  strategy:
+    # The default RollingUpdate would briefly run two replicas, which is the duplicate-evaluation
+    # case above. Recreate accepts a few seconds of no evaluation instead — the correct trade for a
+    # component whose work is idempotent per cycle and resumable.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" (dict "root" $ "component" "sentinel") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.podLabels" (dict "root" $ "component" "sentinel") | nindent 8 }}
+      annotations:
+        # Sentinel is both the consumer and a subject of these metrics. Discovery is by annotation,
+        # so nothing has to be added to a scrape config when a pod appears.
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "8080"
+        # Rolls the pods when the mounted config changes. Without it, `helm upgrade` rewrites the
+        # ConfigMap and the running pods keep the old values until something unrelated restarts them.
+        checksum/config: {{ include (print $.Template.BasePath "/sentinel-config.yaml") . | sha256sum }}
+    spec:
+      {{- include "sentinel.podSpec" . | nindent 6 }}
+{{- else }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "sentinel.fullname" . }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sentinel
+spec:
+  # A StatefulSet purely for stable ordinals — there is no per-pod state here. Pod sentinel-N reads
+  # N out of its own hostname and owns the SLOs whose service name hashes to shard N, which is what
+  # ShardAssignment has done since Phase 1.
+  replicas: {{ .Values.sentinel.sharding.shardCount }}
+  serviceName: {{ include "sentinel.fullname" . }}-headless
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" (dict "root" $ "component" "sentinel") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.podLabels" (dict "root" $ "component" "sentinel") | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "8080"
+        checksum/config: {{ include (print $.Template.BasePath "/sentinel-config.yaml") . | sha256sum }}
+    spec:
+      {{- include "sentinel.podSpec" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sentinel.fullname" . }}-headless
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "sentinel.selectorLabels" (dict "root" $ "component" "sentinel") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sentinel.fullname" . }}
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.sentinel.service.type }}
+  selector:
+    {{- include "sentinel.selectorLabels" (dict "root" $ "component" "sentinel") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.sentinel.service.port }}
+      targetPort: http
+      {{- if eq .Values.sentinel.service.type "NodePort" }}
+      # Mapped to the laptop's 3000 by kind-cluster.yaml, so the front door is the same URL as it is
+      # under Compose.
+      nodePort: {{ .Values.sentinel.service.nodePort }}
+      {{- end }}

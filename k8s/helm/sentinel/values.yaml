@@ -1,0 +1,186 @@
+# Defaults describe the kind demo: everything in one namespace, images loaded into the node rather
+# than pulled, and NodePorts on the ports the Compose stack already uses.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------
+# sentinel-platform
+# ---------------------------------------------------------------------------
+sentinel:
+  image:
+    repository: sentinel/platform
+    tag: local
+    # The images are built locally and side-loaded with `kind load docker-image`. Always would send
+    # the kubelet looking for `sentinel/platform:local` on Docker Hub, where it does not exist.
+    pullPolicy: IfNotPresent
+
+  # demo compresses the SLO windows so a cascade is visible in two minutes (see the demo profile in
+  # application-demo.yml). k8s carries the in-cluster addresses of the fleet and is rendered into
+  # the ConfigMap below.
+  profiles: "demo,k8s"
+
+  # Sharding. Off by default, and the reason the evaluator is a Deployment with one replica: two
+  # replicas at shardCount=1 both own every SLO, so every burn rate is evaluated twice.
+  #
+  # Turn this on and the chart renders a StatefulSet instead, sized to shardCount, with each pod
+  # taking its SHARD_INDEX from its ordinal. That is the horizontal scaling path from SCALING.md,
+  # and it is a values change rather than a code change because ShardAssignment was built in Phase 1.
+  sharding:
+    enabled: false
+    shardCount: 2
+
+  service:
+    type: NodePort
+    port: 8080
+    nodePort: 30000
+
+  # 45s in the pod spec, 30s for Spring's shutdown phase, 5s of preStop. The order matters — see
+  # the graceful-shutdown section of k8s/README.md.
+  terminationGracePeriodSeconds: 45
+  preStopSleepSeconds: 5
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 640Mi
+    limits:
+      memory: 1Gi
+
+  # Spring Boot plus Flyway plus a Kafka consumer group join is not fast, and the cost of a tight
+  # startupProbe is a CrashLoopBackOff on a cold cluster that had nothing wrong with it. 60 x 5s
+  # buys five minutes before Kubernetes gives up, after which liveness takes over on a 10s cadence.
+  probes:
+    startup:
+      periodSeconds: 5
+      failureThreshold: 60
+    liveness:
+      periodSeconds: 10
+      failureThreshold: 3
+    readiness:
+      periodSeconds: 10
+      failureThreshold: 3
+
+  # Empty means no model: RcaConfig sees the placeholder and wires the deterministic drafter, so the
+  # stack is fully functional with no signup. Set apiKey to get model-written narratives.
+  llm:
+    baseUrl: https://api.groq.com/openai
+    model: llama-3.3-70b-versatile
+    apiKey: ""
+
+  apiKey: local-dev-key
+
+# ---------------------------------------------------------------------------
+# KEDA — lag-based scaling. Read the caveat before enabling.
+# ---------------------------------------------------------------------------
+keda:
+  # Off by default, and not because KEDA is hard to install. Sentinel is one deployable holding both
+  # the evaluator and the consumers, so scaling on lag also scales the evaluator — and at
+  # shardCount=1 that means duplicate evaluation of every SLO. The ScaledObject is here as the
+  # pattern and the wiring; making it safe means splitting the two roles, which is stated as future
+  # work in k8s/README.md rather than pretended away.
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 4
+  # Per-partition lag KEDA scales against.
+  lagThreshold: "50"
+  consumerGroup: sentinel-breach
+  topic: slo.breach.v1
+
+# ---------------------------------------------------------------------------
+# Demo fleet — one image, eight Deployments. Two disconnected trees, exactly as in Compose:
+#   ORDER   api-gateway -> checkout -> {cart, payment}; cart -> payment; payment -> fraud -> ledger
+#   BROWSE  search -> catalog
+# The browse path exists so the demo can prove two unrelated failures stay two incidents.
+# ---------------------------------------------------------------------------
+demoFleet:
+  enabled: true
+  image:
+    repository: sentinel/demo-fleet
+    tag: local
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 400Mi
+  services:
+    - name: api-gateway
+      downstream: [checkout-service]
+    - name: checkout-service
+      downstream: [cart-service, payment-service]
+    - name: cart-service
+      downstream: [payment-service]
+    - name: payment-service
+      downstream: [fraud-service]
+    - name: fraud-service
+      downstream: [ledger-service]
+    - name: ledger-service
+      downstream: []
+    - name: search-service
+      downstream: [catalog-service]
+    - name: catalog-service
+      downstream: []
+
+# Without constant traffic rate() returns nothing and the whole system silently does nothing. This
+# is the single most common way a stack like this appears broken on first run.
+loadgen:
+  enabled: true
+  image: grafana/k6:0.52.0
+  rps: 30
+
+# ---------------------------------------------------------------------------
+# Backing services. Single replicas, sized for a laptop. Nothing here is production-grade and
+# k8s/README.md says so — a real deployment points at managed Postgres, Kafka and Redis.
+# ---------------------------------------------------------------------------
+postgres:
+  image: postgres:16-alpine
+  database: sentinel
+  username: sentinel
+  password: sentinel
+  storage: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+redpanda:
+  image: redpandadata/redpanda:v24.1.7
+  storage: 2Gi
+  memory: 512M
+  resources:
+    requests:
+      cpu: 250m
+      memory: 640Mi
+
+redis:
+  image: redis:7.4-alpine
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+
+prometheus:
+  image: prom/prometheus:v2.53.0
+  retention: 7d
+  scrapeInterval: 15s
+  service:
+    type: NodePort
+    port: 9090
+    nodePort: 30090
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+
+grafana:
+  image: grafana/grafana:11.1.0
+  service:
+    type: NodePort
+    port: 3000
+    nodePort: 30001
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi

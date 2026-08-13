@@ -1,0 +1,81 @@
+{{/*
+Redpanda, not Kafka + ZooKeeper: one container, Kafka-API compatible, ~200MB. The application talks
+to it with the standard Kafka client, so "Kafka" stays an honest claim.
+
+A StatefulSet because the log is state — an offset survives a pod restart only if the volume does,
+and "no duplicate incidents after a restart" is a claim this project actually makes.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "sentinel.fullname" . }}-redpanda
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redpanda
+spec:
+  serviceName: {{ include "sentinel.fullname" . }}-redpanda
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" (dict "root" $ "component" "redpanda") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.podLabels" (dict "root" $ "component" "redpanda") | nindent 8 }}
+    spec:
+      containers:
+        - name: redpanda
+          image: {{ .Values.redpanda.image }}
+          command:
+            - redpanda
+            - start
+            - --smp=1
+            - --memory={{ .Values.redpanda.memory }}
+            - --overprovisioned
+            - --node-id=0
+            - --check=false
+            - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+            # Must be the address clients resolve, not the pod IP: this is the endpoint the broker
+            # hands back in metadata, and a wrong value here produces a client that connects once
+            # and then cannot find the leader.
+            - --advertise-kafka-addr=PLAINTEXT://{{ include "sentinel.redpandaHost" . }}:9092
+          ports:
+            - name: kafka
+              containerPort: 9092
+            - name: admin
+              containerPort: 9644
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "rpk cluster health | grep -q 'Healthy:.*true'"]
+            periodSeconds: 5
+            failureThreshold: 30
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/redpanda/data
+          resources:
+            {{- toYaml .Values.redpanda.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: {{ .Values.redpanda.storage }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sentinel.fullname" . }}-redpanda
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "sentinel.selectorLabels" (dict "root" $ "component" "redpanda") | nindent 4 }}
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: kafka
+    - name: admin
+      port: 9644
+      targetPort: admin

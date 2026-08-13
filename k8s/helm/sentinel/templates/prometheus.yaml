@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel.fullname" . }}-prometheus
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" (dict "root" $ "component" "prometheus") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.podLabels" (dict "root" $ "component" "prometheus") | nindent 8 }}
+      annotations:
+        # Rolls Prometheus when the scrape config or the recording rules change. The ConfigMap lives
+        # in its own template file because a template cannot include itself — hashing the file that
+        # carries this annotation is infinite recursion, and Helm's error for it is unreadable.
+        checksum/config: {{ include (print $.Template.BasePath "/prometheus-config.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "sentinel.fullname" . }}-prometheus
+      containers:
+        - name: prometheus
+          image: {{ .Values.prometheus.image }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.retention.time={{ .Values.prometheus.retention }}
+            - --web.enable-lifecycle
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            periodSeconds: 15
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: data
+              mountPath: /prometheus
+          resources:
+            {{- toYaml .Values.prometheus.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "sentinel.fullname" . }}-prometheus
+            items:
+              - key: prometheus.yml
+                path: prometheus.yml
+        # Same ConfigMap, projected a second time with only the rules key. Mounting the whole thing
+        # here would put prometheus.yml into the rules directory as well, `rule_files: rules/*.yml`
+        # would try to parse the scrape config as a rule group, and Prometheus would refuse to start.
+        - name: rules
+          configMap:
+            name: {{ include "sentinel.fullname" . }}-prometheus
+            items:
+              - key: slo-recording-rules.yml
+                path: slo-recording-rules.yml
+        # emptyDir: this is a demo cluster and the retention that matters is Postgres's incident
+        # history, which does survive. Losing the TSDB costs the Grafana graphs their backfill.
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sentinel.fullname" . }}-prometheus
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.prometheus.service.type }}
+  selector:
+    {{- include "sentinel.selectorLabels" (dict "root" $ "component" "prometheus") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.prometheus.service.port }}
+      targetPort: http
+      {{- if eq .Values.prometheus.service.type "NodePort" }}
+      nodePort: {{ .Values.prometheus.service.nodePort }}
+      {{- end }}

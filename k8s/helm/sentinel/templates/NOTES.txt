@@ -1,0 +1,44 @@
+Sentinel is installing into namespace {{ .Release.Namespace }}.
+
+Wait for it:
+
+    kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "sentinel.fullname" . }} --timeout=5m
+
+{{ if and (eq .Values.sentinel.service.type "NodePort") (eq (int .Values.sentinel.service.nodePort) 30000) -}}
+On the kind cluster from k8s/kind-cluster.yaml the node ports are mapped to the host, so the URLs
+are the same ones the Compose stack uses:
+
+    Demo console   http://localhost:3000        <- start here, press "Start demo"
+    Swagger UI     http://localhost:3000/swagger-ui.html
+    Grafana        http://localhost:3001        (anonymous, no login)
+    Prometheus     http://localhost:9090
+
+{{ else -}}
+Reach it with a port-forward:
+
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "sentinel.fullname" . }} 3000:{{ .Values.sentinel.service.port }}
+
+{{ end -}}
+The API is behind a static key:
+
+    curl -H 'X-Api-Key: {{ .Values.sentinel.apiKey }}' http://localhost:3000/api/v1/incidents
+
+{{ if not .Values.sentinel.llm.apiKey -}}
+No LLM API key is set, which is a supported configuration: root-cause drafts come from the
+deterministic timeline summariser. Set sentinel.llm.apiKey for model-written narratives.
+
+{{ end -}}
+{{ if .Values.sentinel.sharding.enabled -}}
+Sharding is ON: {{ .Values.sentinel.sharding.shardCount }} replicas, each owning the SLOs whose
+service name hashes to its ordinal. Confirm the split is disjoint and complete with:
+
+    kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/component=sentinel --tail=-1 | grep "starting shard"
+
+{{ else -}}
+The evaluator runs at one replica. That is deliberate — see k8s/README.md, "Why replicas: 1".
+
+{{ end -}}
+Prove the graceful-drain claim:
+
+    kubectl -n {{ .Release.Namespace }} delete pod -l app.kubernetes.io/component=sentinel
+    # then re-read the incident list: same incidents, no duplicates

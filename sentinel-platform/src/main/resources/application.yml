@@ -1,0 +1,236 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: sentinel
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/sentinel}
+    username: ${DB_USER:sentinel}
+    password: ${DB_PASSWORD:sentinel}
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema. validate makes drift fail loudly at startup.
+      ddl-auto: validate
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2s
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      properties:
+        # Without idempotence a producer retry can duplicate a record on the broker. The consumer
+        # would survive it, but there is no reason to manufacture the duplicate in the first place.
+        enable.idempotence: true
+    consumer:
+      group-id: sentinel
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # ErrorHandlingDeserializer turns a parse failure into a DeserializationException the error
+      # handler can classify, instead of a poison record that stalls the partition forever.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        # The producer stamps __TypeId__ on every record, so the concrete type comes from the
+        # header rather than a per-listener default. Trusted packages keep that from being a
+        # deserialization gadget.
+        spring.json.trusted.packages: com.sentinel.*
+    listener:
+      ack-mode: manual
+      missing-topics-fatal: false
+
+  ai:
+    # Spring AI ships its own retry layer, and it stacks multiplicatively with the Resilience4j
+    # retry on LlmChatCaller: 3 outer attempts x 5 inner became 15 requests to a provider that was
+    # already failing, and turned a "3 attempts then fall back" policy into something far more
+    # aggressive than intended. Resilience4j owns retry here, so this layer is switched off.
+    retry:
+      max-attempts: 1
+    # Only the chat model is wanted. Left on, the starter also autoconfigures embedding, image,
+    # audio and moderation clients that nothing injects.
+    model:
+      embedding: none
+      image: none
+      audio:
+        transcription: none
+        speech: none
+      moderation: none
+    openai:
+      # An OpenAI-compatible endpoint, defaulting to Groq's free tier. "openai" here is the wire
+      # protocol, not the vendor.
+      base-url: ${LLM_BASE_URL:https://api.groq.com/openai}
+      # `make demo` must work with no API key, and Spring AI refuses to build a client without a
+      # non-blank one — an unset key would fail the context at startup rather than degrade. The
+      # placeholder keeps autoconfiguration satisfied; RcaConfig recognises it and wires the
+      # deterministic drafter instead of ever calling out. See RcaConfig.UNCONFIGURED_KEY.
+      api-key: ${LLM_API_KEY:not-configured}
+      chat:
+        options:
+          model: ${LLM_MODEL:llama-3.3-70b-versatile}
+          # Low, not zero: this is a hypothesis for a human to check, and the sampling floor of most
+          # hosted models makes 0.0 a lie anyway.
+          temperature: 0.2
+
+sentinel:
+  evaluation:
+    interval: 15s
+    parallelism: 8
+    shard-index: ${SHARD_INDEX:0}
+    shard-count: ${SHARD_COUNT:1}
+    minimum-events: 60
+    minimum-coverage: 0.75
+  correlation:
+    window: 5m
+    # Two times the correlation window: long enough that a cascade drawing breath does not look
+    # like a recovery.
+    auto-resolve-after: 10m
+    # How often the sweep looks for quiet incidents, as opposed to how quiet they must be.
+    auto-resolve-scan-interval: 60s
+    dedupe-ttl: 24h
+    recent-retention: 10m
+  events:
+    # kafka | in-memory. in-memory exists so tests can run without a broker.
+    publisher: ${EVENT_PUBLISHER:kafka}
+  # Static key on /api/v1/**. Not an IAM: there is no user or org model in this project, and the
+  # README says so rather than implying one exists.
+  api-key: ${SENTINEL_API_KEY:local-dev-key}
+  demo-seed: ${DEMO_SEED:true}
+  metrics:
+    prometheus-base-url: ${PROMETHEUS_URL:http://localhost:9090}
+    timeout: 5s
+    # Must match the scrape_interval in infra/prometheus/prometheus.yml.
+    scrape-interval: 15s
+    # The active-incident gauge is refreshed on a timer rather than inside the gauge callback, so a
+    # Prometheus scrape never hangs on a database query.
+    gauge-refresh-interval: 15s
+  slo:
+    windows:
+      critical:
+        long-window: 1h
+        short-window: 5m
+        burn-threshold: 14.4
+      high:
+        long-window: 6h
+        short-window: 30m
+        burn-threshold: 6.0
+      medium:
+        long-window: 3d
+        short-window: 6h
+        burn-threshold: 1.0
+    allowed-latency-thresholds-ms: [100, 250, 500, 1000, 2000]
+  # The static topology correlation reasons over. Configured, not discovered — stated as a
+  # limitation rather than hidden. Two disconnected trees on purpose: a failure in one must never
+  # be correlated with a failure in the other.
+  dependencies:
+    # Order path
+    api-gateway: [checkout-service]
+    checkout-service: [cart-service, payment-service]
+    cart-service: [payment-service]
+    payment-service: [fraud-service]
+    fraud-service: [ledger-service]
+    ledger-service: []
+    # Browse path
+    search-service: [catalog-service]
+    catalog-service: []
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # Partition counts and the reason a probe is failing. Actuator is already unauthenticated here
+      # (Prometheus scrapes it, Kubernetes probes it), and a readiness probe you cannot explain from
+      # the outside is a readiness probe nobody trusts.
+      show-details: always
+      show-components: always
+      # Liveness answers "restart me"; readiness answers "route to me". Conflating them is the
+      # classic way an outage in a dependency becomes a CrashLoopBackOff.
+      #
+      # OUT_OF_SERVICE maps to 200 at the root endpoint on purpose. The two readiness indicators
+      # (kafkaConsumers, metricsSource) are contributors like any other, so a lost partition
+      # assignment or an unreachable Prometheus would otherwise make `/actuator/health` 503 — which
+      # is what the Compose healthcheck and the demo script watch, and which would restart a
+      # container that is still perfectly able to serve incident history. The readiness group below
+      # keeps the default 503 mapping, so Kubernetes still pulls the pod out of the Service.
+      status:
+        http-mapping:
+          out-of-service: 200
+      group:
+        readiness:
+          include: readinessState,kafkaConsumers,metricsSource
+          status:
+            http-mapping:
+              out-of-service: 503
+        # Liveness stays deliberately narrow: the process, and nothing it depends on. Adding a
+        # dependency here means an outage in that dependency kills every replica at once.
+        liveness:
+          include: livenessState
+  metrics:
+    tags:
+      application: sentinel
+  # Timers publish count/sum/max only unless histograms are switched on. The internals dashboard
+  # asks for p50/p95/p99 via histogram_quantile, which needs the _bucket series — without this the
+  # cycle-duration panels render empty and the scaling metric is unmeasurable.
+  distribution:
+    percentiles-histogram:
+      sentinel.slo.cycle.duration: true
+      sentinel.slo.evaluation.duration: true
+      sentinel.metrics.query.duration: true
+    slo:
+      # An explicit bucket at the evaluation interval, so "is p99 approaching 15s" is answerable
+      # exactly rather than by interpolation between whatever buckets Micrometer picked.
+      sentinel.slo.cycle.duration: 100ms,250ms,500ms,1s,2s,5s,10s,15s,30s
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      llm:
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        sliding-window-size: 10
+        # Half the window must have been observed before the rate means anything. Without this the
+        # first failed call is a 100% failure rate and the breaker opens on one bad request.
+        minimum-number-of-calls: 5
+  retry:
+    instances:
+      prometheus:
+        max-attempts: 3
+        wait-duration: 500ms
+      llm:
+        max-attempts: 3
+        wait-duration: 2s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2
+  timelimiter:
+    instances:
+      llm:
+        # Generous: a 70B model drafting 200 words is not fast, and a timeout here costs the
+        # incident its narrative. The evaluator is not waiting on this — nothing is.
+        timeout-duration: 20s
+        # The HTTP call cannot actually be interrupted, so the thread runs on until the socket
+        # gives up. Cancelling the future is what releases the caller; see LlmChatCaller.
+        cancel-running-future: true
+
+logging:
+  level:
+    com.sentinel: INFO

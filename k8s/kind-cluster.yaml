@@ -1,0 +1,23 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sentinel
+
+# One node. Sentinel's Kubernetes story is about probes, graceful drain and lag-based scaling —
+# none of which needs more than one kubelet, and a multi-node kind cluster on a laptop mostly
+# demonstrates that laptops have finite memory.
+
+nodes:
+  - role: control-plane
+    # The same ports as the Compose stack, so every URL in the README works unchanged whichever
+    # path you took. hostPort is the laptop, containerPort is the NodePort the Service publishes.
+    extraPortMappings:
+      # The front door: demo console, Swagger, the incident API.
+      - containerPort: 30000
+        hostPort: 3000
+        protocol: TCP
+      - containerPort: 30001
+        hostPort: 3001
+        protocol: TCP
+      - containerPort: 30090
+        hostPort: 9090
+        protocol: TCP

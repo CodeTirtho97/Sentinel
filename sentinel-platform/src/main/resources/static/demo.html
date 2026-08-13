@@ -1,0 +1,1162 @@
+<!doctype html>
+<!--
+  Demo visualiser — NOT a product UI.
+
+  CLAUDE.md rules out a frontend and that rule stands: Grafana is the product surface. This page
+  stays inside its spirit — one static file, no framework, no npm, no build step, no new module.
+
+  It is organised around one idea: at any moment there is exactly ONE thing worth looking at. The
+  page tracks which stage the demo is in and says, in plain words, what is happening and why. Detail
+  lives behind tabs so it is available without competing for attention.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel — live</title>
+<style>
+  /*
+    Colour carries meaning here, and only one meaning each. Before this the accent blue was doing
+    five jobs at once — active step, hero number, MEDIUM severity, links, tab underline — which
+    means it signalled nothing. Now:
+      red    = breaching, right now
+      purple = the inferred origin, and nothing else
+      green  = healthy or resolved
+      amber  = degraded, waiting, or a caveat
+      blue   = things you can click. Never a state.
+  */
+  :root {
+    --bg:#0d1117; --panel:#161b22; --raised:#1c222b; --line:#2a313c;
+    --text:#e6edf3; --dim:#8b949e; --faint:#6e7681;
+    --ok:#3fb950; --warn:#d29922; --crit:#f85149; --accent:#58a6ff; --origin:#bc8cff;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --base:15px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#f6f8fa; --panel:#fff; --raised:#f6f8fa; --line:#d1d9e0;
+      --text:#1f2328; --dim:#59636e; --faint:#818b98;
+      --ok:#1a7f37; --warn:#9a6700; --crit:#cf222e; --accent:#0969da; --origin:#8250df;
+    }
+  }
+  /* Presenter mode: everything scales off --base, so one variable resizes the page for a
+     projector or a shared screen without reflowing the layout. */
+  html.present { --base:18px; }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:0 0 60px; background:var(--bg); color:var(--text);
+    font:var(--base)/1.6 var(--sans); -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---- focus: exactly one thing worth looking at ----
+     The page's stated principle, now actually enforced. Sections not relevant to the current
+     stage recede rather than disappear — still readable if someone asks, but no longer competing
+     for attention with the thing that is changing. */
+  .focusable { transition:opacity .4s, box-shadow .4s, border-color .4s; }
+  .focusable.recede { opacity:.42; }
+  .focusable.lead { box-shadow:0 0 0 1px var(--accent), 0 6px 26px rgba(0,0,0,.28); }
+  @media (prefers-reduced-motion: reduce) {
+    .focusable { transition:none; }
+  }
+
+  /* A brief pulse when something genuinely changes. On a shared screen a cascade can appear
+     mid-sentence and be missed entirely; this is the cue that something moved. */
+  @keyframes pulse {
+    0%   { box-shadow:0 0 0 0 color-mix(in srgb,var(--crit) 70%,transparent); }
+    100% { box-shadow:0 0 0 14px transparent; }
+  }
+  .pulse { animation:pulse .9s ease-out 2; }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation:none; } }
+  .wrap { max-width:1180px; margin:0 auto; padding:0 22px; }
+  a { color:var(--accent); }
+  .mono { font-family:var(--mono); }
+
+  /* ---- header ---- */
+  header { border-bottom:1px solid var(--line); background:var(--panel); padding:14px 0; margin-bottom:26px; }
+  .hrow { display:flex; justify-content:space-between; align-items:center; gap:18px; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; font-weight:650; letter-spacing:-.2px; }
+  h1 span { color:var(--dim); font-weight:400; }
+  .links { display:flex; gap:6px; flex-wrap:wrap; }
+  .links a {
+    font-size:12.5px; padding:5px 11px; border-radius:6px; text-decoration:none;
+    border:1px solid var(--line); color:var(--dim); transition:.15s;
+  }
+  .links a:hover { border-color:var(--accent); color:var(--accent); }
+
+  /* ---- step rail ---- */
+  .rail { display:flex; gap:0; margin-bottom:22px; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .step { flex:1; padding:11px 14px; background:var(--panel); border-right:1px solid var(--line); transition:.25s; }
+  .step:last-child { border-right:0; }
+  .step .num { font-size:10.5px; letter-spacing:1.2px; text-transform:uppercase; color:var(--faint); font-weight:600; }
+  .step .name { font-size:13.5px; margin-top:1px; color:var(--dim); }
+  .step.on { background:var(--raised); }
+  .step.on .num { color:var(--accent); }
+  .step.on .name { color:var(--text); font-weight:600; }
+  .step.done .num { color:var(--ok); }
+
+  /* ---- narrator: the single most important element on the page ---- */
+  .narrator { border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:10px;
+              background:var(--panel); padding:18px 20px; margin-bottom:16px; }
+  .narrator.crit { border-left-color:var(--crit); }
+  .narrator.ok { border-left-color:var(--ok); }
+  .narrator.warn { border-left-color:var(--warn); }
+  .narrator h2 { font-size:19px; margin:0 0 7px; font-weight:650; letter-spacing:-.3px; }
+  .narrator .now { font-size:14.5px; margin:0 0 11px; }
+  .narrator .why { font-size:13.5px; color:var(--dim); margin:0; padding-top:11px; border-top:1px solid var(--line); }
+  .narrator .why b { color:var(--text); font-weight:600; }
+  .why-label {
+    display:inline-block; font-size:10px; letter-spacing:1.2px; text-transform:uppercase;
+    color:var(--faint); font-weight:700; margin-right:8px;
+  }
+
+  /* ---- actions ---- */
+  .actions { display:flex; gap:9px; align-items:center; flex-wrap:wrap; margin-bottom:22px; }
+  .btn {
+    font:inherit; font-size:13.5px; font-weight:550; padding:9px 17px; border-radius:7px;
+    cursor:pointer; border:1px solid var(--line); background:var(--panel); color:var(--text); transition:.15s;
+  }
+  .btn:hover:not(:disabled) { border-color:var(--accent); }
+  .btn:disabled { opacity:.35; cursor:not-allowed; }
+  .btn.go { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .btn.go:hover:not(:disabled) { filter:brightness(1.1); }
+  .btn.bad { border-color:var(--crit); color:var(--crit); }
+  .btn.bad:hover:not(:disabled) { background:color-mix(in srgb,var(--crit) 12%,transparent); }
+  .btn.ghost { font-size:12.5px; padding:5px 11px; color:var(--dim); background:transparent; }
+  .btn.ghost:hover:not(:disabled) { color:var(--accent); border-color:var(--accent); }
+  .btn.ghost.on { color:var(--accent); border-color:var(--accent); }
+  .hint { font-size:12.5px; color:var(--faint); }
+  .err {
+    border:1px solid var(--crit); background:color-mix(in srgb,var(--crit) 10%,transparent);
+    border-radius:8px; padding:11px 14px; font-size:13px; margin-bottom:16px; white-space:pre-wrap;
+    font-family:var(--mono);
+  }
+
+  /* ---- elapsed ribbon ----
+     Detection latency is the question everyone asks, and it was previously only answerable by
+     opening Grafana. Four marks on one line answers it at a glance, and makes the asynchronous
+     RCA hop visible as a gap rather than as an architectural claim. */
+  .ribbon {
+    display:flex; gap:0; margin-bottom:16px; border:1px solid var(--line);
+    border-radius:10px; overflow:hidden; background:var(--panel);
+  }
+  .mark { flex:1; padding:10px 14px; border-right:1px solid var(--line); }
+  .mark:last-child { border-right:0; }
+  .mark .k { font-size:10px; letter-spacing:1.1px; text-transform:uppercase; color:var(--faint); font-weight:700; }
+  .mark .t { font-family:var(--mono); font-size:19px; font-weight:700; margin-top:2px; color:var(--faint); letter-spacing:-.5px; }
+  .mark.hit .t { color:var(--text); }
+  .mark.hit.crit .t { color:var(--crit); }
+  .mark.hit.ok .t { color:var(--ok); }
+  .mark .s { font-size:11px; color:var(--faint); margin-top:1px; }
+
+  /* ---- the money number ----
+     Was one of three equal cards, which made the headline result of the whole project look like a
+     footnote. It is now a band, with the abstract ratio sitting next to what it actually means:
+     a column of pages you did not get. */
+  .hero {
+    border:1px solid var(--line); border-radius:12px; background:var(--panel);
+    padding:18px 20px; margin-bottom:16px;
+    display:grid; grid-template-columns:auto 1fr; gap:22px; align-items:center;
+  }
+  .hero .big { font-family:var(--mono); font-size:52px; font-weight:800; line-height:1;
+               letter-spacing:-2.5px; color:var(--crit); }
+  .hero .biglabel { font-size:12.5px; font-weight:650; margin-top:6px; }
+  .hero .bighint { font-size:11.5px; color:var(--faint); margin-top:2px; max-width:210px; line-height:1.45; }
+  .collapse { display:grid; grid-template-columns:1fr auto 1fr; gap:16px; align-items:center; }
+  .colside .h { font-size:10.5px; letter-spacing:1.1px; text-transform:uppercase;
+                color:var(--faint); font-weight:700; margin-bottom:7px; }
+  .pages { font-family:var(--mono); font-size:11.5px; line-height:1.7; max-height:132px; overflow:hidden; }
+  .pages div { color:var(--crit); text-decoration:line-through; opacity:.72; }
+  .pages .more { color:var(--faint); text-decoration:none; opacity:1; }
+  .colarrow { font-size:22px; color:var(--faint); }
+  .oneinc { border:1px solid var(--crit); border-radius:8px; padding:11px 13px;
+            background:color-mix(in srgb,var(--crit) 10%,transparent); font-size:13px; }
+  .oneinc b { font-family:var(--mono); color:var(--origin); }
+
+  /* ---- headline numbers ---- */
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin-bottom:22px; }
+  .stat { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:15px 17px; }
+  .stat .n { font-family:var(--mono); font-size:31px; font-weight:700; line-height:1.05; letter-spacing:-1px; }
+  .stat .l { font-size:12.5px; font-weight:600; margin-top:5px; }
+  .stat .h { font-size:11.5px; color:var(--faint); margin-top:2px; line-height:1.45; }
+
+  /* ---- callouts: the point that would otherwise be left implicit ---- */
+  .callout {
+    border:1px solid var(--line); border-left:4px solid var(--origin); border-radius:10px;
+    background:var(--panel); padding:14px 17px; margin-bottom:16px; font-size:13.5px;
+  }
+  .callout b { color:var(--text); }
+  .callout .k {
+    display:block; font-size:10px; letter-spacing:1.2px; text-transform:uppercase;
+    color:var(--origin); font-weight:700; margin-bottom:5px;
+  }
+  .callout.down { border-left-color:var(--crit); }
+  .callout.down .k { color:var(--crit); }
+
+  /* ---- RCA promoted out of the tab strip ----
+     It is the finale of the demo and it was behind a click. It appears inline the moment a draft
+     lands, and only then. */
+  .rcacard { border:1px solid var(--line); border-radius:12px; background:var(--panel); margin-bottom:16px; }
+  .rcahead {
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    padding:13px 18px; border-bottom:1px solid var(--line);
+  }
+  .rcahead h3 { font-size:12px; text-transform:uppercase; letter-spacing:.9px; color:var(--dim); margin:0; font-weight:650; }
+  .tag {
+    font-family:var(--mono); font-size:10.5px; padding:3px 9px; border-radius:11px;
+    border:1px solid var(--line); color:var(--dim);
+  }
+  .tag.model { border-color:var(--ok); color:var(--ok); }
+  .tag.fallback { border-color:var(--warn); color:var(--warn); }
+  .tag.pending { border-color:var(--accent); color:var(--accent); }
+  .rcahead .spacer { flex:1; }
+
+  /* ---- topology ---- */
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:16px; }
+  .card > h3 {
+    font-size:12px; text-transform:uppercase; letter-spacing:.9px; color:var(--dim);
+    margin:0; padding:13px 18px; border-bottom:1px solid var(--line); font-weight:650;
+  }
+  .card .body { padding:17px 18px; }
+  .legend { display:flex; gap:15px; flex-wrap:wrap; font-size:12px; color:var(--dim); margin-top:14px; }
+  .legend i { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; vertical-align:middle; }
+
+  .tree + .tree { margin-top:17px; padding-top:15px; border-top:1px dashed var(--line); }
+  .tlabel { font-size:11.5px; color:var(--faint); margin-bottom:9px; }
+  .tlabel b { color:var(--dim); }
+  .chain { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .node {
+    font-family:var(--mono); font-size:12.5px; padding:7px 11px; border-radius:7px;
+    border:1px solid var(--line); background:var(--raised); white-space:nowrap; transition:.35s;
+  }
+  .node i { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:7px; background:var(--ok); }
+  .node.breach { border-color:var(--crit); background:color-mix(in srgb,var(--crit) 13%,transparent); }
+  .node.breach i { background:var(--crit); }
+  .node.origin { border-color:var(--origin); background:color-mix(in srgb,var(--origin) 20%,transparent); font-weight:700; }
+  .node.origin i { background:var(--origin); }
+  .node.down { border-style:dashed; opacity:.6; }
+  .arrow { color:var(--faint); font-size:13px; }
+
+  /* ---- tabs ---- */
+  .tabs { display:flex; gap:3px; border-bottom:1px solid var(--line); margin-bottom:0; flex-wrap:wrap; }
+  .tab {
+    font:inherit; font-size:13px; padding:9px 15px; cursor:pointer; background:none;
+    border:0; border-bottom:2px solid transparent; color:var(--dim); transition:.15s;
+  }
+  .tab:hover { color:var(--text); }
+  .tab.on { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+  .tab .badge {
+    font-family:var(--mono); font-size:10.5px; background:var(--line);
+    padding:1px 6px; border-radius:9px; margin-left:6px;
+  }
+  .tabbody { border:1px solid var(--line); border-top:0; border-radius:0 0 10px 10px; background:var(--panel); padding:17px 18px; }
+
+  /* ---- shared content bits ---- */
+  .inc { border:1px solid var(--line); border-left:3px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:10px; }
+  .inc:last-child { margin-bottom:0; }
+  .inc.CRITICAL { border-left-color:var(--crit); }
+  .inc.HIGH { border-left-color:var(--warn); }
+  .inc.MEDIUM { border-left-color:var(--accent); }
+  .inc.RESOLVED { opacity:.5; border-left-color:var(--ok); }
+  .inc .top { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:4px; }
+  .inc .title { font-size:14px; font-weight:600; }
+  .inc .title em { font-style:normal; color:var(--origin); font-family:var(--mono); }
+  .pill { font-size:10.5px; padding:2px 8px; border-radius:10px; border:1px solid var(--line); color:var(--dim); }
+  .meta { font-size:12.5px; color:var(--dim); }
+  .meta .mono { font-size:12px; }
+
+  table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; }
+  th { text-align:left; color:var(--faint); font-weight:600; padding:0 10px 7px 0; font-size:10.5px;
+       text-transform:uppercase; letter-spacing:.6px; }
+  td { padding:5px 10px 5px 0; border-top:1px solid var(--line); white-space:nowrap; }
+  .sev-CRITICAL { color:var(--crit); } .sev-HIGH { color:var(--warn); } .sev-MEDIUM { color:var(--accent); }
+
+  #feed { max-height:340px; overflow-y:auto; font-family:var(--mono); font-size:12.5px; }
+  #feed div { padding:5px 0; border-bottom:1px solid var(--line); }
+  #feed div:last-child { border-bottom:0; }
+  #feed .ts { color:var(--faint); margin-right:9px; }
+  .c-open { color:var(--crit); font-weight:700; }
+  .c-join { color:var(--accent); }
+  .c-res { color:var(--ok); font-weight:700; }
+  .c-sev { color:var(--warn); }
+
+  pre.rca { white-space:pre-wrap; font-family:var(--mono); font-size:12.5px; margin:0;
+            padding:15px; background:var(--raised); border:1px solid var(--line); border-radius:8px; }
+  .caveat { font-size:12.5px; color:var(--dim); margin-top:13px; padding-left:12px; border-left:3px solid var(--warn); }
+  .empty { color:var(--faint); font-style:italic; font-size:13.5px; }
+  code { font-family:var(--mono); font-size:.9em; background:var(--raised); padding:2px 6px; border-radius:5px; }
+  .scroll { overflow-x:auto; }
+
+  .flow { display:grid; grid-template-columns:auto 1fr auto; gap:11px 15px; align-items:start; font-size:13.5px; }
+  .flow .i { font-family:var(--mono); color:var(--accent); font-weight:700; }
+  .flow .d { color:var(--dim); font-size:12.5px; }
+  .flow .v { font-family:var(--mono); font-size:12.5px; color:var(--dim); white-space:nowrap; }
+  .flow .soon { opacity:.5; }
+</style>
+</head>
+<body>
+
+<header><div class="wrap hrow">
+  <h1>Sentinel <span>— turning alert storms into incidents</span></h1>
+  <div class="links">
+    <button class="btn ghost" id="b-present" title="Larger type for a projector or shared screen">Presenter</button>
+    <button class="btn ghost" id="b-freeze" title="Stop polling so the screen holds still while you talk">Freeze</button>
+    <a href="http://localhost:3001/d/sentinel-fleet-slo" target="_blank" rel="noreferrer">Fleet dashboard</a>
+    <a href="http://localhost:3001/d/sentinel-internals" target="_blank" rel="noreferrer">Internals</a>
+    <a href="http://localhost:9090" target="_blank" rel="noreferrer">Prometheus</a>
+    <!-- Swagger, not /api/v1/incidents: every API route is behind X-Api-Key, so a raw link opened
+         in a new tab sends no header and returns 401. Swagger has an Authorize button. -->
+    <a href="/swagger-ui.html" target="_blank" rel="noreferrer">API (Swagger)</a>
+  </div>
+</div></header>
+
+<div class="wrap">
+
+  <div class="rail">
+    <div class="step" id="st-1"><div class="num">Step 1</div><div class="name">Define objectives</div></div>
+    <div class="step" id="st-2"><div class="num">Step 2</div><div class="name">Break a service</div></div>
+    <div class="step" id="st-3"><div class="num">Step 3</div><div class="name">Watch it correlate</div></div>
+    <div class="step" id="st-4"><div class="num">Step 4</div><div class="name">Recover</div></div>
+  </div>
+
+  <div class="narrator" id="narr">
+    <h2 id="n-title">Connecting…</h2>
+    <p class="now" id="n-now">Reading the current state of the fleet.</p>
+    <p class="why"><span class="why-label">Why</span><span id="n-why">—</span></p>
+  </div>
+
+  <div class="actions">
+    <button id="b-seed" class="btn go">Start demo</button>
+    <button id="b-cascade" class="btn bad" disabled>Break order path</button>
+    <button id="b-both" class="btn bad" disabled>Break both paths</button>
+    <button id="b-kill" class="btn bad" disabled title="Halts the process. Docker restarts it; the incident must survive.">Kill Sentinel</button>
+    <button id="b-reset" class="btn" disabled>Reset</button>
+    <span class="hint" id="ctl-msg"></span>
+  </div>
+  <div id="ctl-err" class="err" hidden></div>
+
+  <!-- Shown only while an interesting claim is actually true, so it never becomes wallpaper. -->
+  <div class="callout" id="callout" hidden><span class="k" id="co-k"></span><span id="co-b"></span></div>
+
+  <div class="ribbon focusable" id="ribbon">
+    <div class="mark" id="mk-chaos"><div class="k">Failure injected</div><div class="t">—</div><div class="s">chaos into the leaf</div></div>
+    <div class="mark" id="mk-breach"><div class="k">First breach</div><div class="t">—</div><div class="s">burn rate crossed 14.4x</div></div>
+    <div class="mark" id="mk-inc"><div class="k">Incident open</div><div class="t">—</div><div class="s">correlated and committed</div></div>
+    <div class="mark" id="mk-rca"><div class="k">Root cause drafted</div><div class="t">—</div><div class="s">off the detection path</div></div>
+  </div>
+
+  <div class="hero focusable" id="hero">
+    <div>
+      <div class="big" id="s-ratio">—</div>
+      <div class="biglabel">Alerts collapsed</div>
+      <div class="bighint">breaches absorbed per incident — the product, as a number</div>
+    </div>
+    <div class="collapse">
+      <div class="colside">
+        <div class="h">What a naive system pages you for</div>
+        <div class="pages" id="pages"><span class="empty">nothing yet</span></div>
+      </div>
+      <div class="colarrow">&rarr;</div>
+      <div class="colside">
+        <div class="h">What Sentinel wakes you for</div>
+        <div id="oneinc"><span class="empty">nothing yet</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="n" id="s-breaches">0</div>
+      <div class="l">Raw breaches</div>
+      <div class="h">every objective violation the evaluator detected</div>
+    </div>
+    <div class="stat">
+      <div class="n" id="s-open">0</div>
+      <div class="l">Open incidents</div>
+      <div class="h">what you actually get woken up for</div>
+    </div>
+    <div class="stat">
+      <div class="n" id="s-cycle">—</div>
+      <div class="l">Evaluation cycle</div>
+      <div class="h">mean time to judge every objective, against a 15s interval</div>
+    </div>
+  </div>
+
+  <div class="rcacard focusable" id="rcacard" hidden>
+    <div class="rcahead">
+      <h3>Root cause — drafted automatically</h3>
+      <span class="tag" id="rca-tag">—</span>
+      <span class="spacer"></span>
+      <span class="hint" id="rca-when"></span>
+      <button class="btn ghost" id="b-regen">Regenerate</button>
+    </div>
+    <div class="body" style="padding:17px 18px"><pre class="rca" id="rca-live">—</pre></div>
+  </div>
+
+  <div class="card focusable" id="fleetcard">
+    <h3>The fleet</h3>
+    <div class="body">
+      <div id="topology"><div class="empty">loading…</div></div>
+      <div class="legend">
+        <span><i style="background:var(--ok)"></i>meeting its objective</span>
+        <span><i style="background:var(--crit)"></i>breaching</span>
+        <span><i style="background:var(--origin)"></i>inferred origin</span>
+        <span id="down-warn" hidden style="color:var(--crit)">dashed = not responding</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-t="incidents">Incidents<span class="badge" id="tb-inc">0</span></button>
+    <button class="tab" data-t="timeline">Timeline</button>
+    <button class="tab" data-t="rca">Root cause</button>
+    <button class="tab" data-t="feed">Activity</button>
+    <button class="tab" data-t="how">How it works</button>
+    <button class="tab" data-t="why">Why these choices</button>
+  </div>
+  <div class="tabbody">
+    <div data-p="incidents"><div id="incidents"><div class="empty">No incidents. The fleet is meeting its objectives.</div></div></div>
+
+    <div data-p="timeline" hidden>
+      <div class="meta" style="margin-bottom:12px">
+        Every breach attached to the incident, newest first. This is the raw material an RCA is drafted from.
+      </div>
+      <div class="scroll" id="timeline"><div class="empty">No open incident.</div></div>
+    </div>
+
+    <div data-p="rca" hidden>
+      <div class="meta" style="margin-bottom:12px">
+        Exactly what <code>GET /api/v1/incidents/{id}/rca</code> returns — read from the platform, not
+        composed in this page. Whether a model or the deterministic summariser wrote it is stated on
+        the draft itself.
+      </div>
+      <pre class="rca" id="rca">No open incident.</pre>
+      <div class="caveat">
+        <b>A hypothesis, not a conclusion.</b> The drafter sees the incident, the dependency edges between
+        the affected services, and the breach timeline — no logs, no deploys, no config history. It is
+        told to use only that and to say so when it is not enough. With no <code>LLM_API_KEY</code> set,
+        <code>TemplateRcaDrafter</code> writes the same four sections deterministically, which is what
+        <code>make demo</code> shows and why it needs no signup.
+      </div>
+    </div>
+
+    <div data-p="feed" hidden>
+      <div class="meta" style="margin-bottom:12px">Changes only — nothing is repeated while it stays the same.</div>
+      <div id="feed"><div class="empty">Watching…</div></div>
+    </div>
+
+    <div data-p="how" hidden>
+      <div class="flow">
+        <span class="i">1</span>
+        <div><b>The fleet</b><div class="d">Eight services calling each other synchronously, so a failure at the bottom reaches the top.</div></div>
+        <span class="v" id="f-1">—</span>
+
+        <span class="i">2</span>
+        <div><b>Prometheus</b><div class="d">Scrapes every 15s. Recording rules pre-compute the burn rate for every service, so the query count depends on the number of windows, not the number of services.</div></div>
+        <span class="v" id="f-2">—</span>
+
+        <span class="i">3</span>
+        <div><b>Evaluator</b><div class="d">Every 15s asks: enough data to judge? is the burn rate over the line in <em>both</em> the long and short window? If it cannot see, it says so — it never guesses "broken".</div></div>
+        <span class="v" id="f-3">—</span>
+
+        <span class="i">4</span>
+        <div><b>Kafka</b><div class="d">Breach events keyed by service name, with deterministic ids so a redelivery is recognisable. Detection never waits on correlation.</div></div>
+        <span class="v" id="f-4">—</span>
+
+        <span class="i">5</span>
+        <div><b>Correlator</b><div class="d">Takes the dependency graph, throws away every service that is <em>not</em> currently breaching, and groups what remains. Connected breaches become one incident; disconnected ones stay separate.</div></div>
+        <span class="v" id="f-5">—</span>
+
+        <span class="i">6</span>
+        <div><b>Root cause drafter</b><div class="d">A second consumer, on its own thread. Builds the timeline, sends it to a model, and stores the draft on the incident — or writes the deterministic summary when there is no model to reach. Detection never waits for it.</div></div>
+        <span class="v" id="f-6">—</span>
+      </div>
+    </div>
+
+    <div data-p="why" hidden>
+      <div class="meta" style="margin-bottom:14px">
+        The decisions that are not obvious from the diagram, and what each one is defending against.
+        Most of these are bugs that were found and fixed rather than principles chosen up front.
+      </div>
+      <div class="flow">
+        <span class="i">1</span>
+        <div><b>The correlation key is the origin, not the set of affected services</b>
+          <div class="d">Hashing the member set looks right and quietly breaks the demo: the set grows as the cascade spreads, so every new breach produces a different key and its own incident — four services, four incidents, exactly the storm this exists to collapse. The origin breaches first and stays first, so all four resolve to one key. It is <em>frozen at creation</em>: recomputed for display, never re-keyed.</div></div>
+        <span class="v">§7</span>
+
+        <span class="i">2</span>
+        <div><b>The Redis dedupe mark is set after the commit, never before</b>
+          <div class="d">Marking first is faster and silently loses events: mark, commit fails, Kafka redelivers, the mark is found, the consumer logs DEBUG and returns — the breach is gone with no incident, no dead letter, and no counter to notice it by. Marking afterwards leaves only a duplicate-delivery window, which the partial unique index absorbs.</div></div>
+        <span class="v">§6</span>
+
+        <span class="i">3</span>
+        <div><b>Three dedupe layers, ordered rather than redundant</b>
+          <div class="d">A deterministic v3 event id makes a redelivery <em>recognisable</em>; the Redis key skips the common case cheaply; the partial unique index on <code>correlation_key WHERE state &lt;&gt; 'RESOLVED'</code> catches the commit-to-mark race and concurrent consumers. Verified with 50 threads on one key, and with 10,000 replayed duplicates.</div></div>
+        <span class="v">§5.5</span>
+
+        <span class="i">4</span>
+        <div><b>Correlation walks the subgraph induced by breaching services only</b>
+          <div class="d">Over the full static graph the fleet is permanently one component, so any breach anywhere would collapse into a single incident and correlation would be doing no work at all. Inducing on the breached set is what makes <b>Break both paths</b> produce two incidents instead of one.</div></div>
+        <span class="v">§7</span>
+
+        <span class="i">5</span>
+        <div><b>Burn rate is precomputed in Prometheus</b>
+          <div class="d">A cycle is about six instant queries whatever the fleet size, because the recording rules aggregate <code>by (service)</code> and one query returns every service as a vector. Querying per SLO per window would be 4000 queries a cycle at 1000 services, and Prometheus rather than Sentinel would be the story.</div></div>
+        <span class="v">§5.3</span>
+
+        <span class="i">6</span>
+        <div><b>The LLM is optional, and the fallback is a feature</b>
+          <div class="d">Required-and-degraded would mean the observability platform depends on a third party's uptime <em>in order to explain outages</em>. With no key the deterministic drafter is wired at startup; with a key and a failing provider, retry and a circuit breaker run and then the same summary is written. Either way the incident is explained, and the response says which wrote it.</div></div>
+        <span class="v">§8</span>
+
+        <span class="i">7</span>
+        <div><b>The RCA is written by a targeted UPDATE, not through the entity</b>
+          <div class="d">Rewriting the whole row dragged the draft into the <code>@Version</code> contention that protects the affected-services set — acknowledging an incident while the drafter finished threw a stale-object exception and returned 500, over columns that cannot conflict. The conditional update also makes draft-once atomic.</div></div>
+        <span class="v">found in test</span>
+
+        <span class="i">8</span>
+        <div><b>An LLM failure does not dead-letter</b>
+          <div class="d">Retries are exhausted, the deterministic summary is written, the message is acked. Dead-lettering would leave the incident with no root cause at all, which is strictly worse than one with a plain timeline. The DLT is for messages that need a human.</div></div>
+        <span class="v">§8</span>
+
+        <span class="i">9</span>
+        <div><b>Sharding was built on day one and is still switched off</b>
+          <div class="d"><code>ShardAssignment</code> is ten lines and makes horizontal scaling a config change. Naive replicas would each evaluate every SLO and triple-count the burn rate. It runs at <code>0/1</code> because the measured ceiling has not been reached — naming your own ceiling is the honest version of this answer.</div></div>
+        <span class="v">§5.4</span>
+
+        <span class="i">10</span>
+        <div><b>The demo runs compressed SLO windows</b>
+          <div class="d">Production defaults are 1h/6h/3d; this profile uses 2m/1m. On production windows the first CRITICAL lands around three minutes in, and on a freshly started stack <code>rate()</code> has seconds of history so the burn rate spikes for the wrong reason — the demo would work cold and degrade as it ran. Declared here rather than found later.</div></div>
+        <span class="v">§16</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="hint" style="margin-top:18px">
+    Running the <code>demo</code> profile: SLO windows are compressed to 2m/1m so a cascade is visible
+    in two minutes. Production defaults are 1h/6h/3d — see the <b>Why these choices</b> tab.
+  </p>
+</div>
+
+<script>
+const POLL_MS = 2000;
+const SETTLE_MS = 90_000;
+
+const el = (id) => document.getElementById(id);
+const clock = () => new Date().toLocaleTimeString([], { hour12:false });
+
+// chaosOn distinguishes "failing" from "recovering": the same zero-incident state means something
+// completely different before a break and just after a reset.
+let seeded = false, settleUntil = 0, brokeAt = 0, resetAt = 0, chaosOn = false;
+let openCount = 0, resolvedCount = 0, allDown = false;
+const seen = { state:{}, services:{}, severity:{}, num:{} };
+let nextNum = 1, firstRender = true;
+
+/* The four ribbon marks. Recorded as wall-clock instants the first time each becomes true, so the
+   ribbon reports what actually happened rather than re-deriving it from whatever is on screen. */
+const stamps = { chaos:0, breach:0, incident:0, rca:0 };
+
+/* Kill-and-restart state. killedAt is also the flag that switches the narrator into its own
+   stage — an unreachable Sentinel means something very different when you just killed it. */
+let killedAt = 0, incidentsBeforeKill = null, killVerdict = '';
+
+let frozen = false;
+
+/* The incident the RCA card is currently showing, so Regenerate knows what to redraft. */
+let focusedIncidentId = null;
+
+/* ---------- tabs ---------- */
+document.querySelectorAll('.tab').forEach((t) => {
+  t.onclick = () => {
+    document.querySelectorAll('.tab').forEach((x) => x.classList.toggle('on', x === t));
+    document.querySelectorAll('[data-p]').forEach((p) => { p.hidden = p.dataset.p !== t.dataset.t; });
+  };
+});
+
+/* ---------- narration ----------
+   One stage at a time, each with a concrete NOW and a WHY that explains the mechanism rather than
+   restating the NOW. This is the part that turns a wall of panels into something followable. */
+function narrate(data) {
+  const n = el('narr');
+  n.className = 'narrator ' + (data.tone || '');
+  el('n-title').textContent = data.title;
+  el('n-now').innerHTML = data.now;
+  el('n-why').innerHTML = data.why;
+
+  [1, 2, 3, 4].forEach((i) => {
+    const s = el('st-' + i);
+    s.classList.toggle('on', i === data.step);
+    s.classList.toggle('done', i < data.step);
+  });
+}
+
+function stageFor(ctx) {
+  if (ctx.allDown) return {
+    step:1, tone:'crit', title:'Cannot reach the fleet',
+    now:'Sentinel is up but no fleet service is responding.',
+    why:'The stack is probably still starting. If this persists, check <code>docker compose ps</code> — the fleet containers must be healthy before anything can be measured.',
+  };
+
+  if (!seeded) return {
+    step:1, tone:'', title:'Nothing is being measured yet',
+    now:'Eight services are running and healthy. No objectives are defined, so Sentinel has nothing to judge them against.',
+    why:'An SLO is a promise — "99.9% of requests succeed", "99% finish inside 500ms". Without one there is no error budget, no burn rate and nothing to breach. <b>Start demo</b> creates one availability and one latency objective for each service.',
+  };
+
+  if (settleRemaining() > 0 || (openCount > 0 && !chaosOn && !resetAt)) return {
+    step:1, tone:'warn', title:'Letting the start-up noise clear',
+    now:`Objectives created. Waiting <b>${settleRemaining()}s</b> before anything can be broken.`,
+    why:'The services threw genuine 5xx while booting, because each was calling downstreams that were not up yet. Those errors are still inside the 2-minute evaluation window. Breaking now would mix start-up noise with injected failure — measured, that gave <b>3 incidents naming the wrong origin</b>, where waiting gave <b>1 incident with the right one</b>.',
+  };
+
+  if (!chaosOn && !resetAt) return {
+    step:2, tone:'ok', title:'Healthy, and being watched',
+    now:'Every service is inside its error budget. The evaluator has run a full cycle and found nothing wrong.',
+    why:'Each cycle asks three questions per objective: is there <em>enough data</em> to judge? is the burn rate over the threshold in the <em>long</em> window? and in the <em>short</em> window too? Both must be true — the long window proves the problem is sustained, the short one proves it is still happening. <b>Break order path</b> injects 35% errors and +600ms into <code>ledger-service</code>, the deepest service in the chain.',
+  };
+
+  if (openCount === 0 && chaosOn) {
+    const secs = Math.round((Date.now() - brokeAt) / 1000);
+    return {
+      step:3, tone:'warn', title:'Failing — not yet detected',
+      now:`<code>ledger-service</code> has been returning errors for <b>${secs}s</b>. No incident has been raised.`,
+      why:'This gap is the metrics pipeline, not the evaluator. Prometheus scrapes every 15s and the burn rate is computed over a rolling window, so the error rate has to <em>accumulate</em> before it crosses 14.4× the budget. Detecting faster would mean shorter windows, which means alerting on every transient blip. Typically 25–45s here.',
+    };
+  }
+
+  if (!chaosOn && resetAt && openCount > 0) return {
+    step:4, tone:'warn', title:'Recovering',
+    now:`Failure injection cleared. <b>${openCount}</b> incident(s) still open.`,
+    why:'The errors are still inside the trailing windows, so breaches keep firing for a few minutes after the services are actually healthy. Only once they stop does the quiet period start counting — and after 4 minutes of silence the incident auto-resolves without anyone touching it.',
+  };
+
+  if (openCount === 0 && !chaosOn) return {
+    step:4, tone:'ok', title:'Resolved',
+    now:`Everything auto-resolved. <b>${resolvedCount}</b> incident(s) closed themselves.`,
+    why:'No human acknowledged or closed anything. An incident whose members stop breaching for 4 minutes is resolved by a scheduled sweep, with the full timeline kept for a postmortem. Press <b>Break order path</b> to run it again.',
+  };
+
+  if (openCount === 1) {
+    const i = ctx.incidents.find((x) => x.state !== 'RESOLVED');
+    return {
+      step:3, tone:'crit', title:'One incident, not ' + i.affectedServices.length,
+      now:`<b>${i.affectedServices.length} services</b> are breaching and <b>${i.breachCount} raw breaches</b> have been absorbed into a single incident. The origin is <code>${i.originService}</code>.`,
+      why:`All ${i.affectedServices.length} are connected in the dependency graph, so this is one failure with a blast radius — not ${i.affectedServices.length} independent problems. The origin is inferred from which service breached <em>first</em>; when several breach in the same cycle the tie goes to the one <em>deepest</em> in the call chain, because a dependency failing explains its callers failing far more often than the reverse.`,
+    };
+  }
+
+  // Two incidents mean two very different things, and saying the wrong one would be worse than
+  // saying nothing. Incidents whose services sit in DIFFERENT trees are the designed negative case.
+  // Incidents inside the SAME tree are a satellite thrown off by staggered detection, which is a
+  // known boundary rather than a feature — and it clears itself.
+  const live = ctx.incidents.filter((x) => x.state !== 'RESOLVED');
+  const treeOf = (svc) => ctx.trees.findIndex((t) => t.flat().includes(svc));
+  const trees = live.map((i) => treeOf(i.affectedServices[0]));
+  const separateTrees = new Set(trees).size === trees.length && !trees.includes(-1);
+  const parts = live.map((x) => `<code>${x.originService}</code> (${x.affectedServices.length})`).join(' and ');
+
+  if (separateTrees) return {
+    step:3, tone:'crit', title:`${openCount} incidents — kept apart on purpose`,
+    now:`Two unrelated failures: ${parts}. Sentinel did <em>not</em> merge them.`,
+    why:'This is the half of the proof a single cascade cannot show. The breaching services form two groups with <em>no dependency edge</em> between them, so they stay two incidents. A system that simply grouped everything broken at the same moment would report one incident spanning the whole fleet — a confident and useless answer.',
+  };
+
+  const main = live.reduce((a, b) => (b.affectedServices.length > a.affectedServices.length ? b : a));
+  const extra = live.filter((x) => x !== main);
+  return {
+    step:3, tone:'warn', title:'One real incident, plus a stray',
+    now:`The failure is <code>${main.originService}</code> with <b>${main.affectedServices.length} services</b>. Alongside it: ${extra.map((x) => `<code>${x.originService}</code>`).join(', ')} — same tree, ${extra.map((x) => x.affectedServices.length).join('/')} service(s).`,
+    why:'A cascade does not trip every service in the same 15s cycle. If a service breaches in a cycle where none of its neighbours has yet, it is genuinely alone at that moment and correctly opens its own incident — and the correlation key is frozen at creation, so it cannot later be folded in. The stray stops receiving breaches and <b>auto-resolves after 4 minutes</b>, leaving the real one. Collapsing them at the moment they connect would need live incident merging, which is deliberately out of scope.',
+  };
+}
+
+/* ---------- controls ---------- */
+function showError(t) { const b = el('ctl-err'); b.textContent = t; b.hidden = false; }
+function setMsg(t) { el('ctl-msg').textContent = t; }
+function settleRemaining() { return Math.max(0, Math.ceil((settleUntil - Date.now()) / 1000)); }
+
+/* Every /api/v1 call needs the static API key. The Compose stack ships with the development
+   default; a deployment that sets SENTINEL_API_KEY opens this page as ?key=<the-key>, which is
+   remembered so the query string is only needed once. */
+const API_KEY = (() => {
+  const fromUrl = new URLSearchParams(location.search).get('key');
+  if (fromUrl) { try { localStorage.setItem('sentinel.apiKey', fromUrl); } catch {} return fromUrl; }
+  try { return localStorage.getItem('sentinel.apiKey') || 'local-dev-key'; } catch { return 'local-dev-key'; }
+})();
+
+function apiFetch(path, options = {}) {
+  return fetch(path, { ...options, headers: { ...(options.headers || {}), 'X-Api-Key': API_KEY } });
+}
+
+async function action(button, path, describe) {
+  el('ctl-err').hidden = true;
+  button.disabled = true;
+  setMsg(describe + '…');
+  try {
+    const r = await apiFetch(path, { method:'POST' });
+    const body = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}${body ? ' — ' + JSON.stringify(body) : ''}`);
+    if (body && body.ok === false) showError(`${body.message}\n${(body.details || []).join('\n')}`);
+    else setMsg(body?.message || 'done');
+    return body;
+  } catch (e) {
+    showError(`${describe} failed: ${e.message}\n\n` +
+      `A 404 here means the demo profile is not active. Bring the stack up with:\n` +
+      `SPRING_PROFILES_ACTIVE=demo docker compose up -d\n\n` +
+      `A 401 means the API key does not match. Reopen this page as:\n` +
+      `http://localhost:3000/?key=$SENTINEL_API_KEY`);
+    return null;
+  } finally {
+    refreshButtons();
+  }
+}
+
+function refreshButtons() {
+  el('b-seed').disabled = false;
+  el('b-reset').disabled = !seeded;
+  const blocked = !seeded || settleRemaining() > 0 || (openCount > 0 && !chaosOn && !resetAt);
+  el('b-cascade').disabled = blocked;
+  el('b-both').disabled = blocked;
+  el('b-seed').classList.toggle('go', !seeded);
+  el('b-cascade').classList.toggle('go', seeded && !blocked && !chaosOn);
+  // Killing is only interesting once there is state worth losing. With nothing open it proves
+  // that the process restarts, which nobody doubted.
+  el('b-kill').disabled = openCount === 0 || killedAt > 0;
+  if (blocked && seeded && settleRemaining() > 0) setMsg(`${settleRemaining()}s until the window is clear`);
+}
+
+el('b-seed').onclick = async (e) => {
+  const r = await action(e.target, '/api/v1/demo/seed', 'Creating objectives');
+  if (r) { seeded = true; settleUntil = Date.now() + SETTLE_MS; refreshButtons(); }
+};
+el('b-cascade').onclick = async (e) => {
+  const r = await action(e.target, '/api/v1/demo/chaos?services=ledger-service', 'Breaking ledger-service');
+  if (r) { brokeAt = Date.now(); resetAt = 0; chaosOn = true; startRun(); }
+};
+el('b-both').onclick = async (e) => {
+  const r = await action(e.target, '/api/v1/demo/chaos?services=ledger-service,catalog-service', 'Breaking both leaves');
+  if (r) { brokeAt = Date.now(); resetAt = 0; chaosOn = true; startRun(); }
+};
+
+/* t=0 for the ribbon. Everything after this is measured from the instant failure was injected,
+   which is the only reference point a viewer actually cares about. */
+function startRun() {
+  stamps.chaos = Date.now();
+  stamps.breach = stamps.incident = stamps.rca = 0;
+  killVerdict = '';
+  renderRibbon();
+}
+el('b-reset').onclick = async (e) => {
+  const r = await action(e.target, '/api/v1/demo/reset', 'Clearing failure injection');
+  if (r) { chaosOn = false; resetAt = Date.now(); }
+};
+
+el('b-regen').onclick = async (e) => {
+  if (!focusedIncidentId) return;
+  // 202 and a redraft on a background thread, so the page goes back to "drafting…" rather than
+  // pretending the old text is the new one.
+  stamps.rca = 0;
+  await action(e.target, `/api/v1/incidents/${focusedIncidentId}/rca:regenerate`, 'Redrafting root cause');
+  el('rca-tag').className = 'tag pending';
+  el('rca-tag').textContent = 'drafting…';
+};
+
+/* The kill beat. Records the incident count first, because the claim being tested is that the
+   number does not change — neither losing incidents nor duplicating them. */
+el('b-kill').onclick = async (e) => {
+  incidentsBeforeKill = openCount;
+  killVerdict = '';
+  killedAt = Date.now();
+  await action(e.target, '/api/v1/demo/kill', 'Halting Sentinel');
+  log('c-sev', `KILLED Sentinel with <b>${incidentsBeforeKill}</b> incident(s) open — Docker will restart it`);
+  refreshButtons();
+};
+
+/* Presenter mode and freeze: for talking over the page rather than racing it. */
+el('b-present').onclick = (e) => {
+  const on = document.documentElement.classList.toggle('present');
+  e.target.classList.toggle('on', on);
+};
+el('b-freeze').onclick = (e) => {
+  frozen = !frozen;
+  e.target.classList.toggle('on', frozen);
+  e.target.textContent = frozen ? 'Frozen' : 'Freeze';
+  setMsg(frozen ? 'Polling paused — the screen will hold still.' : '');
+};
+
+setInterval(refreshButtons, 1000);
+
+/* ---------- data ---------- */
+async function getJSON(p) {
+  const r = await apiFetch(p);
+  if (!r.ok) throw new Error(p + ' -> ' + r.status);
+  return r.json();
+}
+
+async function getMetrics() {
+  const text = await (await fetch('/actuator/prometheus')).text();
+  const out = {};
+  for (const line of text.split('\n')) {
+    if (!line || line[0] === '#') continue;
+    const m = line.match(/^([a-z_0-9]+)(\{[^}]*\})?\s+(\S+)$/);
+    if (!m) continue;
+    const v = parseFloat(m[3]);
+    if (isFinite(v)) (out[m[1]] ||= []).push(v);
+  }
+  return (n) => (out[n] || []).reduce((a, b) => a + b, 0);
+}
+
+function log(cls, html) {
+  const feed = el('feed');
+  if (feed.querySelector('.empty')) feed.innerHTML = '';
+  const row = document.createElement('div');
+  row.innerHTML = `<span class="ts">${clock()}</span><span class="${cls}">${html}</span>`;
+  feed.prepend(row);
+  while (feed.children.length > 120) feed.lastChild.remove();
+}
+
+function layout(graph) {
+  const callees = {}, callers = {}, depth = {};
+  graph.services.forEach((s) => { callees[s.name] = []; callers[s.name] = []; depth[s.name] = s.depth; });
+  graph.edges.forEach((e) => { (callees[e.from] ||= []).push(e.to); (callers[e.to] ||= []).push(e.from); });
+
+  const visited = new Set(), trees = [];
+  for (const s of Object.keys(callees)) {
+    if (visited.has(s)) continue;
+    const stack = [s], comp = [];
+    visited.add(s);
+    while (stack.length) {
+      const n = stack.pop(); comp.push(n);
+      [...(callees[n] || []), ...(callers[n] || [])].forEach((m) => {
+        if (!visited.has(m)) { visited.add(m); stack.push(m); }
+      });
+    }
+    trees.push(comp);
+  }
+  return trees.map((comp) => {
+    const byDepth = {};
+    comp.forEach((n) => { (byDepth[depth[n] ?? 0] ||= []).push(n); });
+    return Object.keys(byDepth).sort((a, b) => a - b).map((d) => byDepth[d].sort());
+  }).sort((a, b) => b.flat().length - a.flat().length);
+}
+
+/* ---------- root cause ----------
+   Read from the platform, never composed here. The previous version of this page built the draft
+   in JavaScript from the timeline, which meant the screen and GET /incidents/{id}/rca showed
+   different text — a difference someone would find at the worst possible moment. */
+async function renderRca(incidentId) {
+  const card = el('rcacard');
+  let body;
+  try {
+    const r = await apiFetch(`/api/v1/incidents/${incidentId}/rca`);
+    body = await r.json();
+  } catch {
+    return;
+  }
+
+  if (body.status !== 'READY') {
+    // 202: the drafter is a separate consumer and has not finished. Saying so is more honest than
+    // an empty panel, and it makes the asynchronous hop visible.
+    card.hidden = false;
+    el('rca-tag').textContent = 'drafting…';
+    el('rca-tag').className = 'tag pending';
+    el('rca-when').textContent = '';
+    el('rca-live').textContent = 'The incident is open. Its root cause is still being drafted — '
+      + 'that happens on a separate consumer, so detection never waits for it.';
+    el('rca').textContent = el('rca-live').textContent;
+    return;
+  }
+
+  if (!stamps.rca) { stamps.rca = Date.now(); }
+  card.hidden = false;
+  el('rca-live').textContent = body.draft;
+  el('rca').textContent = body.draft;
+  el('rca-when').textContent = body.generatedAt
+    ? 'drafted ' + new Date(body.generatedAt).toLocaleTimeString([], { hour12:false })
+    : '';
+
+  // Provenance is part of the answer, not bookkeeping: a deterministic summary and a model
+  // narrative deserve different amounts of trust, and a reader who cannot tell has no way to
+  // calibrate. This is also the "works with no API key" claim, made visible.
+  const tag = el('rca-tag');
+  if (body.fallback) {
+    tag.className = 'tag fallback';
+    tag.textContent = 'deterministic fallback — no model';
+  } else {
+    tag.className = 'tag model';
+    tag.textContent = body.model;
+  }
+}
+
+/* ---------- the collapse, as something you can see ----------
+   The ratio is abstract. A column of pages you did not get is not. */
+function renderCollapse(open) {
+  const pages = [];
+  for (const i of open) {
+    for (const s of [...i.affectedServices].sort()) {
+      pages.push(`PAGE  ${s}  SLO breached`);
+    }
+  }
+  const shown = pages.slice(0, 6);
+  el('pages').innerHTML = pages.length
+    ? shown.map((p) => `<div>${p}</div>`).join('')
+        + (pages.length > shown.length ? `<div class="more">+${pages.length - shown.length} more…</div>` : '')
+    : '<span class="empty">nothing yet</span>';
+
+  el('oneinc').innerHTML = open.length
+    ? open.map((i) => `<div class="oneinc">1 incident · origin <b>${i.originService ?? '?'}</b>
+         <div class="meta" style="margin-top:4px">${i.affectedServices.length} services · ${i.breachCount} breaches absorbed</div>
+       </div>`).join('')
+    : '<span class="empty">nothing yet</span>';
+}
+
+/* ---------- ribbon ---------- */
+function renderRibbon() {
+  const mark = (id, at, from, tone) => {
+    const node = el(id);
+    node.className = 'mark' + (at ? ' hit ' + tone : '');
+    node.querySelector('.t').textContent = at
+      ? (from ? '+' + Math.round((at - from) / 1000) + 's' : new Date(at).toLocaleTimeString([], { hour12:false }))
+      : '—';
+  };
+  mark('mk-chaos', stamps.chaos, 0, 'crit');
+  mark('mk-breach', stamps.breach, stamps.chaos, 'crit');
+  mark('mk-inc', stamps.incident, stamps.chaos, 'crit');
+  mark('mk-rca', stamps.rca, stamps.chaos, 'ok');
+}
+
+/* ---------- focus ----------
+   Exactly one thing worth looking at, enforced rather than merely intended. */
+function leadWith(lead) {
+  for (const id of ['ribbon', 'hero', 'rcacard', 'fleetcard']) {
+    const node = el(id);
+    node.classList.toggle('lead', id === lead);
+    node.classList.toggle('recede', lead !== null && id !== lead && id !== 'ribbon');
+  }
+}
+
+/* A brief ring on something that just changed. Purely a cue — nothing depends on it, and it is
+   suppressed entirely under prefers-reduced-motion by the stylesheet. */
+function pulse(id) {
+  const node = el(id);
+  node.classList.remove('pulse');
+  void node.offsetWidth; // restart the animation rather than ignoring a second trigger
+  node.classList.add('pulse');
+}
+
+function callout(kind, label, html) {
+  const box = el('callout');
+  if (!kind) { box.hidden = true; return; }
+  box.hidden = false;
+  box.className = 'callout ' + kind;
+  el('co-k').textContent = label;
+  el('co-b').innerHTML = html;
+}
+
+async function tick() {
+  if (frozen) return;
+
+  let graph, incidents, m, health = [];
+  try {
+    [graph, incidents, m] = await Promise.all([
+      getJSON('/api/v1/services'), getJSON('/api/v1/incidents?size=50'), getMetrics(),
+    ]);
+  } catch (e) {
+    // Unreachable means two completely different things depending on whether you just pressed
+    // Kill, and reporting the wrong one would be worse than reporting nothing.
+    if (killedAt) {
+      const secs = Math.round((Date.now() - killedAt) / 1000);
+      callout('down', 'Sentinel is down',
+        `Killed <b>${secs}s</b> ago with <b>${incidentsBeforeKill}</b> incident(s) open. `
+        + 'Docker is restarting the container. Postgres, Redpanda and Redis are untouched — the '
+        + 'incident lives in Postgres, not in the process that was just destroyed.');
+      narrate({
+        step:3, tone:'crit', title:'Sentinel has been killed',
+        now:`The process was halted <b>${secs}s</b> ago — no graceful shutdown, no draining, offsets left uncommitted mid-flight.`,
+        why:'This is the beat that separates the project from a CRUD app. The incident is in Postgres and survives trivially; the interesting part is the in-flight Kafka message. Its offset was never committed, so on restart the group rebalances and it is delivered again — and the deterministic event id plus the partial unique index make reprocessing a no-op instead of a duplicate incident.',
+      });
+      return;
+    }
+    el('topology').innerHTML = `<div class="empty">Cannot reach Sentinel — ${e.message}</div>`;
+    return;
+  }
+  try { health = await getJSON('/api/v1/demo/status'); } catch { /* not the demo profile */ }
+
+  // Back up after a kill. The claim is that the count did not move in either direction.
+  if (killedAt) {
+    const live = incidents.filter((i) => i.state !== 'RESOLVED').length;
+    const recovery = Math.round((Date.now() - killedAt) / 1000);
+    killVerdict = live === incidentsBeforeKill
+      ? `Back in <b>${recovery}s</b>. <b>${live}</b> incident(s) — the same ones, none lost, none duplicated.`
+      : `Back in <b>${recovery}s</b> with <b>${live}</b> incident(s), against <b>${incidentsBeforeKill}</b> before the kill.`;
+    log('c-res', `RECOVERED after ${recovery}s — ${live} incident(s), was ${incidentsBeforeKill}`);
+    killedAt = 0;
+    refreshButtons();
+  }
+
+  const open = incidents.filter((i) => i.state !== 'RESOLVED');
+  openCount = open.length;
+  resolvedCount = incidents.length - openCount;
+
+  const breaching = new Set(), origins = new Set();
+  open.forEach((i) => { i.affectedServices.forEach((s) => breaching.add(s)); if (i.originService) origins.add(i.originService); });
+  const down = new Set(health.filter((h) => !h.up).map((h) => h.name));
+  allDown = health.length > 0 && down.size === health.length;
+  el('down-warn').hidden = down.size === 0;
+
+  // Numerator and denominator must come from the SAME population, or the headline number is
+  // nonsense: all-time breaches over currently-open incidents once read 561:1 on six incidents,
+  // most of them long resolved. While something is open, report what those open incidents are
+  // absorbing; otherwise fall back to the all-time figure across every incident ever raised.
+  const allBreaches = incidents.reduce((a, i) => a + i.breachCount, 0);
+  const openBreaches = open.reduce((a, i) => a + i.breachCount, 0);
+  const ratio = openCount ? openBreaches / openCount
+              : incidents.length ? allBreaches / incidents.length : 0;
+
+  el('s-breaches').textContent = openCount ? openBreaches : allBreaches;
+  el('s-open').textContent = openCount;
+  el('s-ratio').textContent = ratio ? `${Math.round(ratio)}:1` : '—';
+  el('tb-inc').textContent = incidents.length;
+
+  const cycles = m('sentinel_slo_cycle_duration_seconds_count');
+  const cycleMs = cycles ? m('sentinel_slo_cycle_duration_seconds_sum') / cycles * 1000 : 0;
+  el('s-cycle').textContent = cycles ? `${cycleMs.toFixed(0)}ms` : '—';
+
+  el('f-1').textContent = `${graph.services.length} services`;
+  el('f-2').textContent = `${m('sentinel_metrics_query_duration_seconds_count').toFixed(0)} queries`;
+  el('f-3').textContent = cycles ? `${cycles} cycles, ${cycleMs.toFixed(0)}ms each` : '—';
+  el('f-4').textContent = `${m('sentinel_publish_total').toFixed(0)} events`;
+  el('f-5').textContent = `${incidents.length} incidents`;
+  const fallbacks = m('sentinel_rca_fallbacks_total');
+  const drafted = m('sentinel_rca_duration_seconds_count');
+  el('f-6').textContent = drafted
+    ? `${drafted.toFixed(0)} drafted, ${fallbacks.toFixed(0)} without a model`
+    : '—';
+
+  // The first breach is the moment the count moves, not the moment an incident appears — they are
+  // separated by correlation, and the ribbon exists to show that gap.
+  if (!stamps.breach && openBreaches > 0) stamps.breach = Date.now();
+  if (!stamps.incident && openCount > 0) stamps.incident = Date.now();
+
+  renderCollapse(open);
+  renderRibbon();
+
+  const trees = layout(graph);
+  el('topology').innerHTML = trees.map((levels, i) => `
+    <div class="tree">
+      <div class="tlabel"><b>${i === 0 ? 'Order path' : 'Browse path'}</b> — ${levels.flat().length} services${i === 1 ? ', no dependency edge to the order path' : ''}</div>
+      <div class="chain">
+        ${levels.map((names, li) => `${li > 0 ? '<span class="arrow">→</span>' : ''}<span>${
+          names.map((n) => {
+            const cls = [origins.has(n) ? 'origin' : breaching.has(n) ? 'breach' : '', down.has(n) ? 'down' : ''].join(' ');
+            return `<span class="node ${cls}"><i></i>${n}</span>`;
+          }).join(' ')}</span>`).join('')}
+      </div>
+    </div>`).join('');
+
+  el('incidents').innerHTML = incidents.length ? incidents.map((i) => `
+    <div class="inc ${i.state === 'RESOLVED' ? 'RESOLVED' : i.severity}">
+      <div class="top">
+        <span class="title">${seen.num[i.id] || ''} origin <em>${i.originService ?? '?'}</em></span>
+        <span class="pill">${i.state}</span>
+      </div>
+      <div class="meta">${i.severity} · <b>${i.breachCount}</b> breaches absorbed · ${i.affectedServices.length} service(s) affected</div>
+      <div class="meta mono">${i.affectedServices.join('  ')}</div>
+    </div>`).join('') : '<div class="empty">No incidents. The fleet is meeting its objectives.</div>';
+
+  for (const i of incidents) {
+    const services = [...i.affectedServices].sort().join(',');
+    if (!seen.num[i.id]) {
+      seen.num[i.id] = '#' + nextNum++;
+      if (!firstRender) {
+        log('c-open', `INCIDENT ${seen.num[i.id]} OPENED — ${i.severity}, origin <b>${i.originService}</b>, ${i.affectedServices.length} service(s)`);
+        // On a shared screen an incident can appear mid-sentence and be missed entirely.
+        pulse('hero');
+      }
+    } else {
+      if (seen.services[i.id] !== services) {
+        const before = new Set((seen.services[i.id] || '').split(',').filter(Boolean));
+        const joined = i.affectedServices.filter((s) => !before.has(s));
+        if (joined.length) log('c-join', `${seen.num[i.id]} blast radius → ${i.affectedServices.length}: <b>${joined.join(', ')}</b> joined`);
+      }
+      if (seen.severity[i.id] !== i.severity) log('c-sev', `${seen.num[i.id]} severity ${seen.severity[i.id]} → <b>${i.severity}</b>`);
+      if (seen.state[i.id] !== i.state) log(i.state === 'RESOLVED' ? 'c-res' : 'c-sev', `${seen.num[i.id]} ${seen.state[i.id]} → <b>${i.state}</b>`);
+    }
+    seen.state[i.id] = i.state; seen.services[i.id] = services; seen.severity[i.id] = i.severity;
+  }
+
+  const focus = [...open].sort((a, b) => b.affectedServices.length - a.affectedServices.length)[0];
+  focusedIncidentId = focus ? focus.id : null;
+  if (focus) {
+    try {
+      const d = await getJSON('/api/v1/incidents/' + focus.id);
+      const rows = d.timeline.filter((t) => t.kind === 'BREACH').slice(-16).reverse();
+      el('timeline').innerHTML = `<table>
+        <tr><th>Time</th><th>Service</th><th>Objective</th><th>Severity</th><th>Long burn</th><th>Short burn</th></tr>
+        ${rows.map((t) => `<tr>
+          <td>${new Date(t.occurredAt).toLocaleTimeString([], { hour12:false })}</td>
+          <td>${t.serviceName ?? ''}</td><td>${t.sloType ?? ''}</td>
+          <td class="sev-${t.severity ?? ''}">${t.severity ?? ''}</td>
+          <td>${t.longBurnRate != null ? t.longBurnRate.toFixed(0) + 'x' : ''}</td>
+          <td>${t.shortBurnRate != null ? t.shortBurnRate.toFixed(0) + 'x' : ''}</td></tr>`).join('')}
+      </table>`;
+      await renderRca(focus.id);
+    } catch { /* resolved between polls */ }
+  } else {
+    el('timeline').innerHTML = '<div class="empty">No open incident.</div>';
+    el('rca').textContent = 'No open incident. The fleet is meeting its objectives.';
+    el('rcacard').hidden = true;
+  }
+
+  narrate(stageFor({ incidents, allDown, trees }));
+  renderRibbon();
+
+  /* ---- the point, said out loud ----
+     Each of these is a claim the screen supports but does not make, and the one most likely to be
+     missed is the negative case: two incidents is the proof correlation groups what is CONNECTED
+     rather than what merely broke at the same moment. */
+  const live = incidents.filter((i) => i.state !== 'RESOLVED');
+  const treeOf = (svc) => trees.findIndex((tr) => tr.flat().includes(svc));
+  const treeIds = live.map((i) => treeOf(i.affectedServices[0]));
+  const separateTrees = live.length > 1 && new Set(treeIds).size === treeIds.length && !treeIds.includes(-1);
+
+  if (killVerdict) {
+    callout('', 'Survived the kill', killVerdict
+      + ' The offset of any in-flight message was never committed, so it was redelivered on restart —'
+      + ' and the deterministic event id and partial unique index made reprocessing a no-op.');
+  } else if (separateTrees) {
+    callout('', 'Two incidents, on purpose',
+      `<b>${live.length} unrelated failures</b>, kept apart: ${live.map((i) => `<code>${i.originService}</code>`).join(' and ')}.
+       There is no dependency edge between these groups, so they are not merged. This is the half of
+       the proof a single cascade cannot show — a system that grouped everything broken at the same
+       moment would report one incident spanning the fleet, which is a confident and useless answer.`);
+  } else if (live.length === 1 && live[0].breachCount > live[0].affectedServices.length) {
+    const i = live[0];
+    callout('', 'One incident, not ' + i.affectedServices.length,
+      `<b>${i.breachCount} raw breaches</b> across <b>${i.affectedServices.length} connected services</b>
+       became a single incident with <code>${i.originService}</code> as its inferred origin. Those
+       ${i.affectedServices.length} services are joined in the dependency graph, so this is one
+       failure with a blast radius rather than ${i.affectedServices.length} independent problems.`);
+  } else {
+    callout(null);
+  }
+
+  // Lead with whatever is actually changing.
+  if (!el('rcacard').hidden && openCount > 0 && stamps.rca) leadWith('rcacard');
+  else if (openCount > 0) leadWith('hero');
+  else if (chaosOn) leadWith('fleetcard');
+  else leadWith(null);
+
+  if (firstRender) {
+    firstRender = false;
+    if (incidents.length) { seeded = true; chaosOn = true; brokeAt = Date.now(); }
+    log('', incidents.length ? `watching — ${incidents.length} existing incident(s)` : 'watching — fleet healthy');
+    refreshButtons();
+  }
+}
+
+tick();
+setInterval(tick, POLL_MS);
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{{- if and .Values.loadgen.enabled .Values.demoFleet.enabled }}
+{{/*
+The baseline load generator, and the single most load-bearing container in the stack.
+
+Without constant traffic rate() returns nothing, every burn rate is InsufficientData, no breach ever
+fires, and the entire system sits there looking like it is working. It is the most common way a
+deployment of this shape appears broken on first run, so it ships with the chart rather than being
+something you remember to start.
+
+Both entry points are driven: the order path through api-gateway, the browse path through
+search-service. An untrafficked tree cannot breach, so it could never be half of the two-incident
+demo.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sentinel.fullname" . }}-loadgen
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+data:
+  # Copy of loadtest/k6/baseline.js — Helm cannot read above the chart root. `make k8s-sync`
+  # refreshes it; CI diffs it against the original.
+  baseline.js: |
+{{ .Files.Get "files/baseline.js" | indent 4 }}
+{{- end }}

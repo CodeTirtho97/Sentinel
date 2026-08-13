@@ -1,0 +1,220 @@
+# Burn rate is precomputed here, not in the evaluator. One instant query per window returns
+# every service as a vector, so a cycle costs a handful of queries at any fleet size.
+#
+# Generated shape, four rules per window:
+#   slo:error_ratio:W    availability  bad/total
+#   slo:latency_ratio:W  latency       fraction slower than each bucket, `le` preserved
+#   slo:requests:W       event count   feeds the minimum-events guard
+#   slo:samples:W        scrape count  feeds the coverage guard for partial windows
+#
+# The `or 0 * ...` in error_ratio is load-bearing. Without it a service with zero 5xx produces no
+# numerator series, the division yields nothing, and every healthy service silently disappears
+# from the result rather than reporting a ratio of 0.
+
+groups:
+  # Demo and short production windows.
+  - name: slo_burn_rate_fast
+    interval: 15s
+    rules:
+      - record: slo:error_ratio:1m
+        expr: |
+          (
+            sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[1m]))
+            or
+            0 * sum by (service) (rate(http_server_requests_seconds_count[1m]))
+          )
+          / sum by (service) (rate(http_server_requests_seconds_count[1m]))
+
+      - record: slo:latency_ratio:1m
+        expr: |
+          1 - (
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[1m]))
+            / on (service) group_left
+            sum by (service) (rate(http_server_requests_seconds_count[1m]))
+          )
+
+      - record: slo:requests:1m
+        expr: sum by (service) (increase(http_server_requests_seconds_count[1m]))
+
+      - record: slo:samples:1m
+        expr: max by (service) (count_over_time(http_server_requests_seconds_count[1m]))
+
+      - record: slo:error_ratio:2m
+        expr: |
+          (
+            sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[2m]))
+            or
+            0 * sum by (service) (rate(http_server_requests_seconds_count[2m]))
+          )
+          / sum by (service) (rate(http_server_requests_seconds_count[2m]))
+
+      - record: slo:latency_ratio:2m
+        expr: |
+          1 - (
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[2m]))
+            / on (service) group_left
+            sum by (service) (rate(http_server_requests_seconds_count[2m]))
+          )
+
+      - record: slo:requests:2m
+        expr: sum by (service) (increase(http_server_requests_seconds_count[2m]))
+
+      - record: slo:samples:2m
+        expr: max by (service) (count_over_time(http_server_requests_seconds_count[2m]))
+
+      - record: slo:error_ratio:5m
+        expr: |
+          (
+            sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+            or
+            0 * sum by (service) (rate(http_server_requests_seconds_count[5m]))
+          )
+          / sum by (service) (rate(http_server_requests_seconds_count[5m]))
+
+      - record: slo:latency_ratio:5m
+        expr: |
+          1 - (
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[5m]))
+            / on (service) group_left
+            sum by (service) (rate(http_server_requests_seconds_count[5m]))
+          )
+
+      - record: slo:requests:5m
+        expr: sum by (service) (increase(http_server_requests_seconds_count[5m]))
+
+      - record: slo:samples:5m
+        expr: max by (service) (count_over_time(http_server_requests_seconds_count[5m]))
+
+      - record: slo:error_ratio:15m
+        expr: |
+          (
+            sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[15m]))
+            or
+            0 * sum by (service) (rate(http_server_requests_seconds_count[15m]))
+          )
+          / sum by (service) (rate(http_server_requests_seconds_count[15m]))
+
+      - record: slo:latency_ratio:15m
+        expr: |
+          1 - (
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[15m]))
+            / on (service) group_left
+            sum by (service) (rate(http_server_requests_seconds_count[15m]))
+          )
+
+      - record: slo:requests:15m
+        expr: sum by (service) (increase(http_server_requests_seconds_count[15m]))
+
+      - record: slo:samples:15m
+        expr: max by (service) (count_over_time(http_server_requests_seconds_count[15m]))
+
+      - record: slo:error_ratio:30m
+        expr: |
+          (
+            sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[30m]))
+            or
+            0 * sum by (service) (rate(http_server_requests_seconds_count[30m]))
+          )
+          / sum by (service) (rate(http_server_requests_seconds_count[30m]))
+
+      - record: slo:latency_ratio:30m
+        expr: |
+          1 - (
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[30m]))
+            / on (service) group_left
+            sum by (service) (rate(http_server_requests_seconds_count[30m]))
+          )
+
+      - record: slo:requests:30m
+        expr: sum by (service) (increase(http_server_requests_seconds_count[30m]))
+
+      - record: slo:samples:30m
+        expr: max by (service) (count_over_time(http_server_requests_seconds_count[30m]))
+
+  # Long windows: expensive range selectors, evaluated less often.
+  - name: slo_burn_rate_slow
+    interval: 1m
+    rules:
+      - record: slo:error_ratio:1h
+        expr: |
+          (
+            sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[1h]))
+            or
+            0 * sum by (service) (rate(http_server_requests_seconds_count[1h]))
+          )
+          / sum by (service) (rate(http_server_requests_seconds_count[1h]))
+
+      - record: slo:latency_ratio:1h
+        expr: |
+          1 - (
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[1h]))
+            / on (service) group_left
+            sum by (service) (rate(http_server_requests_seconds_count[1h]))
+          )
+
+      - record: slo:requests:1h
+        expr: sum by (service) (increase(http_server_requests_seconds_count[1h]))
+
+      - record: slo:samples:1h
+        expr: max by (service) (count_over_time(http_server_requests_seconds_count[1h]))
+
+      - record: slo:error_ratio:6h
+        expr: |
+          (
+            sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[6h]))
+            or
+            0 * sum by (service) (rate(http_server_requests_seconds_count[6h]))
+          )
+          / sum by (service) (rate(http_server_requests_seconds_count[6h]))
+
+      - record: slo:latency_ratio:6h
+        expr: |
+          1 - (
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[6h]))
+            / on (service) group_left
+            sum by (service) (rate(http_server_requests_seconds_count[6h]))
+          )
+
+      - record: slo:requests:6h
+        expr: sum by (service) (increase(http_server_requests_seconds_count[6h]))
+
+      - record: slo:samples:6h
+        expr: max by (service) (count_over_time(http_server_requests_seconds_count[6h]))
+
+      - record: slo:error_ratio:3d
+        expr: |
+          (
+            sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[3d]))
+            or
+            0 * sum by (service) (rate(http_server_requests_seconds_count[3d]))
+          )
+          / sum by (service) (rate(http_server_requests_seconds_count[3d]))
+
+      - record: slo:latency_ratio:3d
+        expr: |
+          1 - (
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[3d]))
+            / on (service) group_left
+            sum by (service) (rate(http_server_requests_seconds_count[3d]))
+          )
+
+      - record: slo:requests:3d
+        expr: sum by (service) (increase(http_server_requests_seconds_count[3d]))
+
+      - record: slo:samples:3d
+        expr: max by (service) (count_over_time(http_server_requests_seconds_count[3d]))
+
+  # Error budget accounting over the 30 day rolling window.
+  - name: slo_budget
+    interval: 5m
+    rules:
+      - record: slo:errors:30d
+        expr: |
+          (
+            sum by (service) (increase(http_server_requests_seconds_count{status=~"5.."}[30d]))
+            or
+            0 * sum by (service) (increase(http_server_requests_seconds_count[30d]))
+          )
+
+      - record: slo:total:30d
+        expr: sum by (service) (increase(http_server_requests_seconds_count[30d]))

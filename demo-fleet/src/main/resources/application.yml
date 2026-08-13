@@ -1,0 +1,38 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: ${SERVICE_NAME:demo-service}
+  threads:
+    virtual:
+      enabled: true
+
+fleet:
+  service-name: ${SERVICE_NAME:demo-service}
+  # Comma-separated base URLs. Empty for leaf services (ledger).
+  downstream: ${DOWNSTREAM:}
+  base-latency-ms: ${BASE_LATENCY_MS:10}
+  jitter-ms: ${JITTER_MS:20}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    distribution:
+      # LATENCY SLOs are validated against exactly these bucket boundaries.
+      slo:
+        "[http.server.requests]": 100ms,250ms,500ms,1s,2s
+      percentiles-histogram:
+        "[http.server.requests]": false
+
+logging:
+  level:
+    org.springframework.web.servlet.mvc.method.annotation.ResponseStatusExceptionResolver: ERROR

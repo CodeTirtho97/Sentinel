@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.sentinel</groupId>
+    <artifactId>sentinel-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>synthetic-exporter</artifactId>
+  <name>synthetic-exporter</name>
+  <description>
+    LOAD TESTING ONLY. Exposes N fake services' worth of Prometheus series so the evaluator can be
+    measured at 1000 services without running 1000 containers.
+  </description>
+
+  <dependencies>
+    <!--
+      Web only. No Micrometer here on purpose: this module writes the Prometheus exposition format
+      by hand. Registering ~24,000 real meters (2000 services x statuses x histogram buckets) would
+      make the exporter itself the bottleneck being measured, which defeats the point of having it.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

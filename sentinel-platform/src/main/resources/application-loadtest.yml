@@ -1,0 +1,28 @@
+# Load testing. Production SLO windows, nothing compressed.
+#
+# The point of the exercise is to find the ceiling a real deployment would hit, and the demo's
+# short windows would flatter it: a 3d range selector over a thousand services is materially more
+# work for Prometheus than a 15m one. Measuring the easy case and quoting it as the ceiling would
+# be the kind of number that falls apart under one follow-up question.
+#
+# This profile therefore inherits every window from application.yml and changes only what the
+# measurement itself needs.
+sentinel:
+  # The synthetic exporter starts emitting at full rate immediately, but Prometheus still needs to
+  # accumulate enough samples for a 1h window to be judged. Left at the production 0.75, every
+  # service reports InsufficientData for the first 45 minutes of a run and the evaluator does no
+  # real work — which would measure an idle cycle and call it a ceiling.
+  evaluation:
+    minimum-coverage: 0.05
+    minimum-events: 60
+
+logging:
+  level:
+    # The evaluator logs each breach at WARN, so quietening it means ERROR, not WARN. At 2000
+    # services with 30% breaching that is 600 lines every cycle, synchronously, on the thread being
+    # timed — small per line, but it is measurement apparatus showing up inside the measurement.
+    # The trade is that genuine evaluator warnings are hidden for the duration of a run; the
+    # metrics (sentinel.slo.evaluations.total, sentinel.metrics.query.failures) still record them.
+    com.sentinel.slo.SloEvaluator: ERROR
+    com.sentinel.incident.IncidentService: WARN
+    com.sentinel.rca: WARN

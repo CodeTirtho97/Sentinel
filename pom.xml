@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.0</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.sentinel</groupId>
+  <artifactId>sentinel-parent</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <name>sentinel-parent</name>
+  <description>SLO and incident intelligence platform</description>
+
+  <modules>
+    <module>sentinel-platform</module>
+    <module>demo-fleet</module>
+    <module>synthetic-exporter</module>
+  </modules>
+
+  <properties>
+    <java.version>21</java.version>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+    <resilience4j.version>2.3.0</resilience4j.version>
+    <spotless.version>2.44.4</spotless.version>
+    <jacoco.version>0.8.13</jacoco.version>
+    <!-- Mutation testing runs on slo.math only — see the sentinel-platform POM for why. -->
+    <pitest.version>1.19.1</pitest.version>
+    <pitest.junit5.version>1.2.2</pitest.junit5.version>
+
+    <testcontainers.version>1.21.3</testcontainers.version>
+    <!-- Deterministic, offline stubs for the Prometheus API and the LLM. -->
+    <wiremock.version>3.9.2</wiremock.version>
+    <!-- Keeps LLM integration in Java: no Python sidecar in a Java-forward repo. -->
+    <spring-ai.version>1.0.0</spring-ai.version>
+    <springdoc.version>2.8.6</springdoc.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.github.resilience4j</groupId>
+        <artifactId>resilience4j-bom</artifactId>
+        <version>${resilience4j.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.springframework.ai</groupId>
+        <artifactId>spring-ai-bom</artifactId>
+        <version>${spring-ai.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>com.diffplug.spotless</groupId>
+          <artifactId>spotless-maven-plugin</artifactId>
+          <version>${spotless.version}</version>
+          <configuration>
+            <java>
+              <palantirJavaFormat/>
+              <removeUnusedImports/>
+              <trimTrailingWhitespace/>
+              <endWithNewline/>
+            </java>
+          </configuration>
+          <!-- Not bound to a phase: `make fmt` applies, CI runs spotless:check. -->
+        </plugin>
+        <plugin>
+          <groupId>org.jacoco</groupId>
+          <artifactId>jacoco-maven-plugin</artifactId>
+          <version>${jacoco.version}</version>
+        </plugin>
+        <!-- Integration tests are *IT and run under failsafe, so `mvn test` stays fast and
+             Docker-free while `mvn verify` runs the Testcontainers suite. -->
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-failsafe-plugin</artifactId>
+          <configuration>
+            <includes>
+              <include>**/*IT.java</include>
+            </includes>
+            <systemPropertyVariables>
+              <!--
+                Testcontainers negotiates Docker API 1.32 by default. Docker Engine 29 dropped
+                support for anything below 1.40 and answers 400, which Testcontainers surfaces as
+                the thoroughly misleading "Could not find a valid Docker environment".
+
+                1.41 is Docker 20.10 (2020) and sits above the Engine 29 floor, so it satisfies both
+                ends of any Docker anyone is realistically running.
+              -->
+              <api.version>1.41</api.version>
+            </systemPropertyVariables>
+          </configuration>
+          <executions>
+            <execution>
+              <goals>
+                <goal>integration-test</goal>
+                <goal>verify</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
+    <plugins>
+      <plugin>
+        <groupId>com.diffplug.spotless</groupId>
+        <artifactId>spotless-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

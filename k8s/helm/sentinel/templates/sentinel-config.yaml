@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sentinel.fullname" . }}-config
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+data:
+  # Mounted at /app/config, which is a default Spring Boot config location relative to the working
+  # directory in the image. Profile-suffixed, so it is only read when `k8s` is in the active
+  # profiles — the jar stays identical between Compose and Kubernetes and only the addresses move.
+  application-k8s.yaml: |
+    sentinel:
+      demo:
+        # The demo console's Break / Reset buttons post to these. In Compose the hostnames are the
+        # bare service names; here they carry the release prefix. The keys must stay the bare names,
+        # because a key is the `service` metric label and the dependency-graph identity.
+        fleet:
+          {{- range .Values.demoFleet.services }}
+          {{ .name }}: http://{{ include "sentinel.fleetHost" (dict "root" $ "name" .name) }}:8080
+          {{- end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "sentinel.fullname" . }}-secrets
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  # A demo chart with demo credentials. Real deployments point these at a secret manager; the point
+  # here is that the values arrive as a Secret and an env-var reference rather than sitting in the
+  # Deployment spec where `kubectl get deploy -o yaml` prints them.
+  DB_PASSWORD: {{ .Values.postgres.password | quote }}
+  SENTINEL_API_KEY: {{ .Values.sentinel.apiKey | quote }}
+  {{- if .Values.sentinel.llm.apiKey }}
+  LLM_API_KEY: {{ .Values.sentinel.llm.apiKey | quote }}
+  {{- end }}

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: sentinel
+description: SLO and incident intelligence platform, plus the demo fleet and observability stack it watches
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/tirthoraj/sentinel
+keywords:
+  - slo
+  - error-budget
+  - incident
+  - observability
+maintainers:
+  - name: Sentinel

@@ -1,0 +1,23 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: synthetic-exporter
+  threads:
+    virtual:
+      enabled: true
+
+# Every value is the load test's to set. The defaults describe a small, healthy fleet, so starting
+# the exporter with no configuration produces something sane rather than a storm.
+synthetic:
+  services: ${SYNTHETIC_SERVICES:100}
+  chain-length: ${SYNTHETIC_CHAIN_LENGTH:5}
+  rps: ${SYNTHETIC_RPS:20}
+  error-rate: ${SYNTHETIC_ERROR_RATE:0.0005}
+  breach-fraction: ${SYNTHETIC_BREACH_FRACTION:0.0}
+  breach-error-rate: ${SYNTHETIC_BREACH_ERROR_RATE:0.30}
+
+logging:
+  level:
+    com.sentinel.synth: INFO

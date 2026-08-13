@@ -1,0 +1,56 @@
+{{- if .Values.keda.enabled }}
+{{/*
+Scaling on Kafka consumer lag, not CPU.
+
+CPU is the wrong signal for this workload and it is worth being precise about why. The consumers
+spend their time waiting — on Postgres, on Redis, on the broker — so during the exact event that
+matters, a breach storm producing thousands of messages, CPU barely moves. Lag does: it is the
+backlog itself rather than a proxy for it, and `lagThreshold` is a statement about how far behind
+detection is allowed to fall, which is a thing an SRE can actually reason about.
+
+READ THIS BEFORE ENABLING IT — the caveat is the interesting part.
+
+Sentinel is one deployable holding both roles: the @Scheduled evaluator and the Kafka consumers.
+KEDA scaling this workload therefore scales the evaluator too, and at shardCount=1 every replica
+owns every SLO. The result is N processes computing the same burn rate from the same recording-rule
+series and each publishing a breach.
+
+That is survivable rather than correct: the event ID is derived from (sloId, severity,
+evaluationBucket), so replicas landing in the same bucket produce the same ID and the dedupe layer
+absorbs it — but replicas whose cycles straddle a bucket boundary do not, and the duplicated
+Prometheus queries are wasted either way.
+
+The honest fix is to split the two roles into separate Deployments — a single evaluator (or a
+sharded StatefulSet) and a lag-scaled consumer pool. That needs a role flag in the application, not
+a chart change, and it is listed as future work in k8s/README.md instead of being papered over here.
+*/}}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "sentinel.fullname" . }}-consumer-lag
+  labels:
+    {{- include "sentinel.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    kind: {{ if .Values.sentinel.sharding.enabled }}StatefulSet{{ else }}Deployment{{ end }}
+    name: {{ include "sentinel.fullname" . }}
+  minReplicaCount: {{ .Values.keda.minReplicas }}
+  maxReplicaCount: {{ .Values.keda.maxReplicas }}
+  # Long relative to the 15s evaluation cycle. Scaling in during a lull that is really the gap
+  # between two waves of a cascade would drop partitions mid-incident and force a rebalance at the
+  # worst moment.
+  cooldownPeriod: 300
+  pollingInterval: 15
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: {{ include "sentinel.redpandaHost" . }}:9092
+        consumerGroup: {{ .Values.keda.consumerGroup | quote }}
+        topic: {{ .Values.keda.topic | quote }}
+        lagThreshold: {{ .Values.keda.lagThreshold | quote }}
+        # The topic has 3 partitions, so a fourth replica would sit idle holding nothing. maxReplicas
+        # above is the real ceiling; this stops KEDA from scaling past what the partition count can
+        # actually distribute.
+        allowIdleConsumers: "false"
+        offsetResetPolicy: earliest
+{{- end }}

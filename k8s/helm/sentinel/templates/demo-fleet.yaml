@@ -1,0 +1,96 @@
+{{- if .Values.demoFleet.enabled }}
+{{/*
+One image, eight Deployments, generated from the list in values.yaml. Not eight charts and not
+eight copies of this file — the same decision the Compose stack makes with a YAML anchor.
+
+Two disconnected trees:
+  ORDER   api-gateway -> checkout -> {cart, payment}; cart -> payment; payment -> fraud -> ledger
+  BROWSE  search -> catalog
+The browse path exists so the demo can prove two unrelated failures stay two incidents. Without a
+second tree there is no way to show correlation is doing anything other than grouping everything.
+*/}}
+{{- $root := . }}
+{{- range .Values.demoFleet.services }}
+{{- $name := .name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "sentinel.fleetHost" (dict "root" $root "name" $name) }}
+  labels:
+    {{- include "sentinel.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+    sentinel.io/fleet: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "sentinel.selectorLabels" (dict "root" $root "component" $name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sentinel.podLabels" (dict "root" $ "component" $name) | nindent 8 }}
+        sentinel.io/fleet: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "8080"
+    spec:
+      # Short by demo-fleet standards, and enough: these serve sub-second requests and hold nothing.
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: fleet
+          image: "{{ $root.Values.demoFleet.image.repository }}:{{ $root.Values.demoFleet.image.tag }}"
+          imagePullPolicy: {{ $root.Values.demoFleet.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Unprefixed on purpose. This string becomes the `service` tag on every meter, which is
+            # the label the recording rules aggregate by, the key in the dependency graph, and the
+            # correlation key of an incident. The Kubernetes object name carries the release prefix;
+            # the domain identity must not.
+            - name: SERVICE_NAME
+              value: {{ $name | quote }}
+            # Synchronous downstream calls, so a failure in a leaf propagates up the tree and the
+            # cascade is real rather than simulated.
+            - name: DOWNSTREAM
+              value: "{{- range $i, $d := .downstream }}{{ if $i }},{{ end }}http://{{ include "sentinel.fleetHost" (dict "root" $root "name" $d) }}:8080{{- end }}"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 15
+          # readinessState only, which stays UP while chaos is injected. That is required, not
+          # incidental: chaos makes /work return 500s, and a readiness probe that noticed would pull
+          # the pod out of its Service, the traffic would stop, rate() would go flat, and the
+          # cascade the demo exists to show would never reach Prometheus.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 10
+          resources:
+            {{- toYaml $root.Values.demoFleet.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sentinel.fleetHost" (dict "root" $root "name" $name) }}
+  labels:
+    {{- include "sentinel.labels" $root | nindent 4 }}
+spec:
+  selector:
+    {{- include "sentinel.selectorLabels" (dict "root" $root "component" $name) | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}
+{{- end }}

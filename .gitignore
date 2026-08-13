@@ -1,0 +1,30 @@
+target/
+*.class
+*.jar
+*.war
+
+.mvn/wrapper/maven-wrapper.jar
+
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+.DS_Store
+Thumbs.db
+
+*.log
+logs/
+
+.env
+.env.local
+application-local.yml
+
+# Rendered Helm output. k8s/helm/sentinel/files/ is NOT ignored — those copies are committed on
+# purpose so `helm install ./k8s/helm/sentinel` works from a fresh clone with no sync step.
+rendered/
+*.tgz
