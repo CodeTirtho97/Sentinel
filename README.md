@@ -1,7 +1,7 @@
 # Sentinel
 
 **SLO and incident intelligence for a service fleet.** Sentinel decides when services have broken
-their reliability promise, and turns the resulting alert storm into a single incident with a drafted
+their reliability promise, and turns the resulting alert storm into a single incident with a complete drafted
 explanation.
 
 [![CI](https://github.com/CodeTirtho97/Sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/CodeTirtho97/Sentinel/actions/workflows/ci.yml)
