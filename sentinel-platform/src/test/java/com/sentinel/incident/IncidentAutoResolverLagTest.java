@@ -1,5 +1,6 @@
 package com.sentinel.incident;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -7,7 +8,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.assertj.core.api.Assertions.assertThat;
 
 import com.sentinel.config.SentinelProperties;
 import io.micrometer.core.instrument.Tags;
@@ -126,15 +126,12 @@ class IncidentAutoResolverLagTest {
             }
 
             resolver = new IncidentAutoResolver(
-                    repository,
-                    incidents,
-                    Clock.fixed(NOW, ZoneOffset.UTC),
-                    new SentinelProperties(),
-                    registry);
+                    repository, incidents, Clock.fixed(NOW, ZoneOffset.UTC), new SentinelProperties(), registry);
         }
 
         double skipped() {
-            var counter = registry.find("sentinel.incidents.autoresolve.skipped").counter();
+            var counter =
+                    registry.find("sentinel.incidents.autoresolve.skipped").counter();
             return counter == null ? 0 : counter.count();
         }
     }

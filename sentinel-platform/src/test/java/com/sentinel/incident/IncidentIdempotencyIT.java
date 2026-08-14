@@ -58,7 +58,8 @@ class IncidentIdempotencyIT extends AbstractIntegrationTest {
         runConcurrently(
                 index -> {
                     var event = distinct.get(index);
-                    var correlation = new CorrelationResult(Set.of("ledger-service"), "ledger-service", List.of(BreachRef.of(event)));
+                    var correlation = new CorrelationResult(
+                            Set.of("ledger-service"), "ledger-service", List.of(BreachRef.of(event)));
                     if (service.openOrAttach(correlation, event).created()) {
                         created.incrementAndGet();
                     }
@@ -79,7 +80,8 @@ class IncidentIdempotencyIT extends AbstractIntegrationTest {
     @DisplayName("50 concurrent deliveries of ONE event produce one incident and one timeline entry")
     void duplicateEventIsRecordedOnce() throws Exception {
         SloBreachEvent event = Breaches.critical("ledger-service", MutableClock.START);
-        var correlation = new CorrelationResult(Set.of("ledger-service"), "ledger-service", List.of(BreachRef.of(event)));
+        var correlation =
+                new CorrelationResult(Set.of("ledger-service"), "ledger-service", List.of(BreachRef.of(event)));
 
         var duplicates = new AtomicInteger();
         var failures = new CopyOnWriteArrayList<Throwable>();
@@ -126,7 +128,8 @@ class IncidentIdempotencyIT extends AbstractIntegrationTest {
     @DisplayName("a resolved incident does not block a new one under the same key")
     void resolvedIncidentFreesTheKey() {
         SloBreachEvent first = Breaches.critical("ledger-service", MutableClock.START.minusSeconds(60));
-        var correlation = new CorrelationResult(Set.of("ledger-service"), "ledger-service", List.of(BreachRef.of(first)));
+        var correlation =
+                new CorrelationResult(Set.of("ledger-service"), "ledger-service", List.of(BreachRef.of(first)));
 
         var opened = service.openOrAttach(correlation, first);
         service.transition(opened.incidentId(), IncidentState.RESOLVED, "test");
@@ -135,7 +138,8 @@ class IncidentIdempotencyIT extends AbstractIntegrationTest {
         // service that breaks twice in a day can never open a second incident.
         SloBreachEvent second = Breaches.critical("ledger-service", MutableClock.START);
         var reopened = service.openOrAttach(
-                new CorrelationResult(Set.of("ledger-service"), "ledger-service", List.of(BreachRef.of(second))), second);
+                new CorrelationResult(Set.of("ledger-service"), "ledger-service", List.of(BreachRef.of(second))),
+                second);
 
         assertThat(reopened.created()).isTrue();
         assertThat(reopened.incidentId()).isNotEqualTo(opened.incidentId());

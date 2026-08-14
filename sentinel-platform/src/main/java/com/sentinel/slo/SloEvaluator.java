@@ -96,8 +96,9 @@ public class SloEvaluator {
         Duration window = props.getCorrelation().getWindow();
         Duration resolveAfter = props.getCorrelation().getAutoResolveAfter();
         if (republishInterval.compareTo(window) >= 0 || republishInterval.compareTo(resolveAfter) >= 0) {
-            throw new IllegalStateException("breach-republish-interval (%s) must be shorter than both the correlation window (%s) and auto-resolve-after (%s)"
-                    .formatted(republishInterval, window, resolveAfter));
+            throw new IllegalStateException(
+                    "breach-republish-interval (%s) must be shorter than both the correlation window (%s) and auto-resolve-after (%s)"
+                            .formatted(republishInterval, window, resolveAfter));
         }
     }
 

@@ -189,7 +189,8 @@ class SloEvaluatorAnnounceTest {
             when(metrics.errorRatios(any(), any(), any()))
                     .thenReturn(Map.of(SERVICE, new ErrorRatio(ratio, 10_000, 1.0, at)));
 
-            int before = publisher.payloads(Topics.SLO_BREACH, SloBreachEvent.class).size();
+            int before =
+                    publisher.payloads(Topics.SLO_BREACH, SloBreachEvent.class).size();
             evaluator.evaluateCycle();
 
             return publisher.payloads(Topics.SLO_BREACH, SloBreachEvent.class).stream()

@@ -87,7 +87,8 @@ public class DependencySeeder implements ApplicationRunner {
     private Map<String, List<String>> fetchTopology(String url) {
         try {
             @SuppressWarnings("unchecked")
-            Map<String, List<String>> body = RestClient.create().get().uri(url).retrieve().body(Map.class);
+            Map<String, List<String>> body =
+                    RestClient.create().get().uri(url).retrieve().body(Map.class);
             if (body == null || body.isEmpty()) {
                 throw new IllegalStateException("empty topology from " + url);
             }

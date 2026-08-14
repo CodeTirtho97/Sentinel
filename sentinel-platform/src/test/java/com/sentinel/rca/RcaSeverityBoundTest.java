@@ -128,8 +128,7 @@ class RcaSeverityBoundTest {
         }
 
         double skipped(Severity severity) {
-            var counter = registry
-                    .find("sentinel.rca.skipped")
+            var counter = registry.find("sentinel.rca.skipped")
                     .tag("severity", severity.name())
                     .counter();
             return counter == null ? 0 : counter.count();

@@ -115,7 +115,8 @@ class IncidentApiIT extends AbstractIntegrationTest {
 
     private UUID openIncident(String serviceName) {
         SloBreachEvent event = Breaches.critical(serviceName, clock.instant());
-        return service.openOrAttach(new CorrelationResult(Set.of(serviceName), serviceName, List.of(BreachRef.of(event))), event)
+        return service.openOrAttach(
+                        new CorrelationResult(Set.of(serviceName), serviceName, List.of(BreachRef.of(event))), event)
                 .incidentId();
     }
 }

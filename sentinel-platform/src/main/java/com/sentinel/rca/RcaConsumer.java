@@ -66,7 +66,8 @@ public class RcaConsumer {
         // timeline summary on demand, which is the same thing the fallback path produces.
         if (!draftSeverities.contains(event.severity())) {
             log.debug("skipping RCA for {} incident {}", event.severity(), key);
-            registry.counter("sentinel.rca.skipped", "severity", event.severity().name())
+            registry.counter(
+                            "sentinel.rca.skipped", "severity", event.severity().name())
                     .increment();
             dedupe.markProcessed(key);
             ack.acknowledge();

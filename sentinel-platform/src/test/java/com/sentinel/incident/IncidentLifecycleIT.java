@@ -123,14 +123,15 @@ class IncidentLifecycleIT extends AbstractIntegrationTest {
 
     private UUID openIncident(String serviceName) {
         SloBreachEvent event = Breaches.critical(serviceName, clock.instant());
-        return service.openOrAttach(new CorrelationResult(Set.of(serviceName), serviceName, List.of(BreachRef.of(event))), event)
+        return service.openOrAttach(
+                        new CorrelationResult(Set.of(serviceName), serviceName, List.of(BreachRef.of(event))), event)
                 .incidentId();
     }
 
     private void attachBreach(UUID incidentId, String serviceName, java.time.Instant at) {
         SloBreachEvent event = Breaches.critical(serviceName, at);
-        var outcome =
-                service.openOrAttach(new CorrelationResult(Set.of(serviceName), serviceName, List.of(BreachRef.of(event))), event);
+        var outcome = service.openOrAttach(
+                new CorrelationResult(Set.of(serviceName), serviceName, List.of(BreachRef.of(event))), event);
         assertThat(outcome.incidentId()).isEqualTo(incidentId);
     }
 }
