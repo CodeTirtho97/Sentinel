@@ -129,3 +129,9 @@ k6-summary.json
 # ---------------------------------------------------------------------------
 # Local tool configuration, not part of the project. Nothing in the build, the demo or CI reads it.
 .claude/
+
+# The build spec Claude Code reads. Kept local rather than committed — it is scaffolding for how the
+# project was built, not documentation of what it does; README.md and docs/ are that. Was listed
+# under "Build output" but had been tracked since the initial commit, so the rule never applied
+# until `git rm --cached` untracked it.
+CLAUDE.md

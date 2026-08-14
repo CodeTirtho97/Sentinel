@@ -27,6 +27,12 @@ function incidents() {
   return r.status === 200 ? r.json() : [];
 }
 
+// k6 0.52 compiles scripts through Babel, which does not support ES2020 nullish coalescing (`??`).
+// A missing counter reads as null here, and null means "never incremented", which is zero.
+function orZero(value) {
+  return value === null || value === undefined ? 0 : value;
+}
+
 function metric(body, name) {
   for (const line of body.split('\n')) {
     if (line.startsWith('#') || !line.startsWith(name)) continue;
@@ -54,7 +60,10 @@ export default function () {
   let firstIncidentMs = null;
   let lastCount = before;
   let stableFor = 0;
+  let sinceReport = 0;
   const deadline = t0 + WAIT_MIN * 60 * 1000;
+
+  console.log(`polling for up to ${WAIT_MIN} min; settles once the count holds for 60s`);
 
   // Poll until the incident count stops growing for a full minute — the storm has landed when it
   // stops arriving, not when the first one shows up.
@@ -74,6 +83,18 @@ export default function () {
     } else {
       stableFor = 0;
       lastCount = count;
+    }
+
+    // Detection is bounded below by the SLO windows, so the first minute or two of nothing is
+    // expected rather than broken. Saying so beats staring at a still cursor.
+    sinceReport += 5;
+    if (sinceReport >= 30) {
+      sinceReport = 0;
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
+      console.log(
+        `  +${elapsed}s — incidents: ${count} (was ${before} at t0), ` +
+          `steady for ${stableFor}s of the 60s needed`,
+      );
     }
   }
 
@@ -96,8 +117,8 @@ export default function () {
   console.log(`Raw breaches absorbed:   ${rawBreaches}`);
   console.log(`ALERT COLLAPSE RATIO:    ${incidentCount > 0 ? (rawBreaches / incidentCount).toFixed(2) : 'n/a'}:1`);
   console.log(`Still open:              ${opened.length}`);
-  console.log(`Consumer DLT total:      ${metric(metrics, 'sentinel_consumer_dlt_total') ?? 0}`);
-  console.log(`RCA fallbacks:           ${metric(metrics, 'sentinel_rca_fallbacks_total') ?? 0}`);
+  console.log(`Consumer DLT total:      ${orZero(metric(metrics, 'sentinel_consumer_dlt_total'))}`);
+  console.log(`RCA fallbacks:           ${orZero(metric(metrics, 'sentinel_rca_fallbacks_total'))}`);
   console.log('======================');
 
   // Correlation is doing real work only if it collapsed anything at all. One incident per breach
@@ -105,6 +126,6 @@ export default function () {
   check(null, {
     'incidents were created': () => incidentCount > 0,
     'correlation collapsed multiple breaches per incident': () => rawBreaches > incidentCount,
-    'nothing dead-lettered': () => (metric(metrics, 'sentinel_consumer_dlt_total') ?? 0) === 0,
+    'nothing dead-lettered': () => orZero(metric(metrics, 'sentinel_consumer_dlt_total')) === 0,
   });
 }

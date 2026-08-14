@@ -3,17 +3,19 @@
 // Samples sentinel_slo_cycle_duration_seconds over a settle period and reports p50/p95/p99 plus
 // interval drift. The ceiling is the service count at which p99 approaches the 15s interval.
 //
-//   k6 run -e SENTINEL=http://localhost:8080 -e DURATION_MIN=10 evaluation-throughput.js
+//   k6 run -e SENTINEL=http://localhost:8080 -e DURATION_MIN=20 evaluation-throughput.js
 //
-// Ramp SYNTHETIC_SERVICES across 100 / 250 / 500 / 1000 / 2000, restarting the exporter between
-// runs, and record each row. scripts/load-test.sh does the ramp.
+// Ramp SYNTHETIC_SERVICES across 100 / 250 / 500, restarting the exporter between runs, and
+// record each row. scripts/load-test.sh does the ramp at DURATION_MIN=20.
 
 import http from 'k6/http';
 import { sleep, check } from 'k6';
 
 const SENTINEL = __ENV.SENTINEL || 'http://sentinel:8080';
 const API_KEY = __ENV.API_KEY || 'local-dev-key';
-const DURATION_MIN = parseInt(__ENV.DURATION_MIN || '10', 10);
+// 20 minutes is ~80 cycles at a 15s interval. Ten would be ~40, and the 99th percentile of 40
+// observations is effectively "the slowest one" — one GC pause moves it.
+const DURATION_MIN = parseInt(__ENV.DURATION_MIN || '20', 10);
 const INTERVAL_SECONDS = parseFloat(__ENV.INTERVAL_SECONDS || '15');
 
 export const options = { vus: 1, iterations: 1, duration: `${DURATION_MIN + 5}m` };
@@ -22,6 +24,12 @@ function scrape() {
   const r = http.get(`${SENTINEL}/actuator/prometheus`);
   check(r, { 'sentinel metrics reachable': (res) => res.status === 200 });
   return r.body;
+}
+
+// k6 0.52 compiles scripts through Babel, which does not support ES2020 nullish coalescing (`??`).
+// A missing counter reads as null here, and null means "never incremented", which is zero.
+function orZero(value) {
+  return value === null || value === undefined ? 0 : value;
 }
 
 // Reads a single metric line's value. Micrometer renders histogram quantiles as
@@ -35,6 +43,23 @@ function metric(body, name, labelMatch) {
     if (!isNaN(value)) return value;
   }
   return null;
+}
+
+// Sums every line of a counter, optionally filtered to one label value. sentinel_slo_evaluations_total
+// is split by result, so reading only the first line would report one outcome as if it were all of them.
+function metricSum(body, name, labelMatch) {
+  let sum = 0;
+  let found = false;
+  for (const line of body.split('\n')) {
+    if (line.startsWith('#') || !line.startsWith(name)) continue;
+    if (labelMatch && !line.includes(labelMatch)) continue;
+    const value = parseFloat(line.slice(line.lastIndexOf(' ') + 1));
+    if (!isNaN(value)) {
+      sum += value;
+      found = true;
+    }
+  }
+  return found ? sum : null;
 }
 
 // Histogram quantile from the _bucket series, which is what the config publishes. Reading
@@ -62,18 +87,47 @@ function quantileFromBuckets(body, name, q) {
   return null;
 }
 
+// Sleeps in one-minute chunks and reports progress between them. A single sleep(1200) is 20
+// minutes of total silence, which is indistinguishable from a hung run — and this is exactly the
+// window in which you would want to know the evaluator had stopped.
+//
+// The per-minute scrape of /actuator/prometheus is not measurement interference worth worrying
+// about: Prometheus already scrapes the same endpoint every 15s, and Sentinel's own registry does
+// not grow with fleet size.
+function sleepWithProgress(totalSeconds, label) {
+  const startedAt = Date.now();
+  let slept = 0;
+  while (slept < totalSeconds) {
+    const chunk = Math.min(60, totalSeconds - slept);
+    sleep(chunk);
+    slept += chunk;
+
+    const cycles = metric(scrape(), 'sentinel_slo_cycle_duration_seconds_count');
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    const pct = Math.round((slept / totalSeconds) * 100);
+    console.log(
+      `  ${label} ${pct}% — ${elapsed}s / ${totalSeconds}s, ` +
+        `cycles so far: ${cycles === null ? 'NONE (evaluator not running?)' : cycles}`,
+    );
+  }
+}
+
 export default function () {
-  console.log(`settling for 90s before sampling`);
-  sleep(90);
+  console.log(`settling for 90s before sampling (lets the evaluator reach steady state)`);
+  sleepWithProgress(90, 'settle');
 
   const before = scrape();
   const cyclesBefore = metric(before, 'sentinel_slo_cycle_duration_seconds_count');
   const wallStart = Date.now();
 
   check(null, { 'evaluator is running cycles': () => cyclesBefore !== null });
+  if (cyclesBefore === null) {
+    console.error('sentinel_slo_cycle_duration_seconds_count is absent — the evaluator has not');
+    console.error('completed a single cycle. Everything below will be "no data".');
+  }
 
-  console.log(`sampling for ${DURATION_MIN} minutes`);
-  sleep(DURATION_MIN * 60);
+  console.log(`sampling for ${DURATION_MIN} minutes — baseline cycle count ${cyclesBefore}`);
+  sleepWithProgress(DURATION_MIN * 60, 'sample');
 
   const after = scrape();
   const wallSeconds = (Date.now() - wallStart) / 1000;
@@ -102,8 +156,31 @@ export default function () {
   console.log(`Cycle p95:           ${fmt(quantileFromBuckets(after, 'sentinel_slo_cycle_duration_seconds', 0.95))}`);
   console.log(`Cycle p99:           ${fmt(quantileFromBuckets(after, 'sentinel_slo_cycle_duration_seconds', 0.99))}`);
   console.log(`Interval drift:      ${driftSeconds.toFixed(1)} s over ${wallSeconds.toFixed(0)} s`);
-  console.log(`Query failures:      ${metric(after, 'sentinel_metrics_query_failures_total') ?? 0}`);
+  console.log(`Query failures:      ${orZero(metricSum(after, 'sentinel_metrics_query_failures_total'))}`);
+
+  // The subtlest bad run: every SLO returning InsufficientData produces a beautifully fast cycle
+  // that measures nothing at all. It looks like a great result until someone asks what it evaluated.
+  const evalTotal = metricSum(after, 'sentinel_slo_evaluations_total');
+  const insufficient = metricSum(after, 'sentinel_slo_evaluations_total', 'result="insufficient"');
+  if (evalTotal && insufficient !== null) {
+    const share = (insufficient / evalTotal) * 100;
+    console.log(`Evaluations:         ${evalTotal} total, ${share.toFixed(1)}% insufficient-data`);
+    if (share > 90) {
+      console.error('');
+      console.error(`  WARNING: ${share.toFixed(1)}% of evaluations returned InsufficientData.`);
+      console.error('  This cycle time measures an evaluator doing almost no real work. Check that');
+      console.error('  the loadtest profile is active (minimum-coverage: 0.05) and that Prometheus');
+      console.error('  has had time to accumulate history. Do not transcribe this row.');
+    }
+  }
   console.log('===============================');
+
+  check(null, {
+    'cycles actually ran': () => cycles > 0,
+    'no query failures': () => orZero(metricSum(after, 'sentinel_metrics_query_failures_total')) === 0,
+    'evaluator did real work': () =>
+      evalTotal === null || insufficient === null || insufficient / evalTotal < 0.9,
+  });
 }
 
 function fmt(seconds) {

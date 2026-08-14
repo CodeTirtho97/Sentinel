@@ -3,6 +3,7 @@ package com.sentinel.incident;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.sentinel.correlation.BreachRef;
 import com.sentinel.correlation.CorrelationResult;
 import com.sentinel.events.SloBreachEvent;
 import com.sentinel.support.AbstractIntegrationTest;
@@ -122,14 +123,14 @@ class IncidentLifecycleIT extends AbstractIntegrationTest {
 
     private UUID openIncident(String serviceName) {
         SloBreachEvent event = Breaches.critical(serviceName, clock.instant());
-        return service.openOrAttach(new CorrelationResult(Set.of(serviceName), serviceName, List.of(event)), event)
+        return service.openOrAttach(new CorrelationResult(Set.of(serviceName), serviceName, List.of(BreachRef.of(event))), event)
                 .incidentId();
     }
 
     private void attachBreach(UUID incidentId, String serviceName, java.time.Instant at) {
         SloBreachEvent event = Breaches.critical(serviceName, at);
         var outcome =
-                service.openOrAttach(new CorrelationResult(Set.of(serviceName), serviceName, List.of(event)), event);
+                service.openOrAttach(new CorrelationResult(Set.of(serviceName), serviceName, List.of(BreachRef.of(event))), event);
         assertThat(outcome.incidentId()).isEqualTo(incidentId);
     }
 }

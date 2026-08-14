@@ -1,6 +1,5 @@
 package com.sentinel.correlation;
 
-import com.sentinel.events.SloBreachEvent;
 import java.util.List;
 import java.util.Set;
 
@@ -9,9 +8,9 @@ import java.util.Set;
  *
  * @param component the services breaching together in this window
  * @param originService earliest breach in the component, ties broken by graph depth
- * @param memberBreaches every in-window breach belonging to the component, oldest first
+ * @param memberBreaches every in-window breaching service in the component, oldest first
  */
-public record CorrelationResult(Set<String> component, String originService, List<SloBreachEvent> memberBreaches) {
+public record CorrelationResult(Set<String> component, String originService, List<BreachRef> memberBreaches) {
 
     /** The correlation key is the origin, frozen at incident creation and never recomputed onto it. */
     public String correlationKey() {

@@ -28,9 +28,22 @@ duplicate_keys() {
 }
 
 echo "==== RECOVERY TEST ===="
+echo "  This takes roughly 1-3 minutes: kill, restart, wait for two completed cycles,"
+echo "  then a 20s settle before counting. Progress is dotted while waiting."
+echo ""
+
+# A cycle counter that is already advancing is the only proof the baseline is meaningful — killing
+# an evaluator that was not evaluating measures nothing.
+if [[ -z "$(cycles 2>/dev/null || true)" ]]; then
+  echo "  sentinel is not reporting completed cycles; nothing to recover from" >&2
+  echo "  check: curl -s ${SENTINEL_URL}/actuator/prometheus | grep cycle_duration" >&2
+  exit 1
+fi
 
 before_incidents=$(incident_count)
 before_dupes=$(duplicate_keys)
+before_cycles=$(cycles)
+echo "  cycles completed so far: ${before_cycles}"
 echo "  incidents before kill:   ${before_incidents}"
 echo "  duplicate keys before:   ${before_dupes}"
 
@@ -72,7 +85,10 @@ printf ' ok\n'
 recovered_at=$(date +%s)
 recovery_seconds=$((recovered_at - killed_at))
 
-# Give the consumers a moment to redeliver anything uncommitted before counting.
+# Give the consumers a moment to redeliver anything uncommitted before counting. Anything Kafka
+# redelivers after the rebalance arrives in this window, so counting earlier would pass for the
+# wrong reason.
+echo "  settling 20s so redelivered messages land before counting..."
 sleep 20
 
 after_incidents=$(incident_count)

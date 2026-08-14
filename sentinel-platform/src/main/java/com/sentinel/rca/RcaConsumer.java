@@ -1,10 +1,13 @@
 package com.sentinel.rca;
 
+import com.sentinel.config.SentinelProperties;
 import com.sentinel.correlation.DedupeStore;
 import com.sentinel.events.IncidentEvent;
 import com.sentinel.events.Topics;
 import com.sentinel.incident.IncidentNotFoundException;
+import com.sentinel.slo.domain.Severity;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,11 +33,13 @@ public class RcaConsumer {
     private final RcaService rca;
     private final DedupeStore dedupe;
     private final MeterRegistry registry;
+    private final Set<Severity> draftSeverities;
 
-    RcaConsumer(RcaService rca, DedupeStore dedupe, MeterRegistry registry) {
+    RcaConsumer(RcaService rca, DedupeStore dedupe, MeterRegistry registry, SentinelProperties props) {
         this.rca = rca;
         this.dedupe = dedupe;
         this.registry = registry;
+        this.draftSeverities = Set.copyOf(props.getRca().getDraftSeverities());
     }
 
     @KafkaListener(id = "rca-listener", topics = Topics.INCIDENT_OPENED, groupId = "sentinel-rca")
@@ -45,6 +50,25 @@ public class RcaConsumer {
 
         if (dedupe.alreadyProcessed(key)) {
             log.debug("RCA already drafted for incident {}", key);
+            ack.acknowledge();
+            return;
+        }
+
+        // Draft only for severities worth a model call.
+        //
+        // One LLM call per incident is fine for the demo's single cascade and ruinous for a storm:
+        // measured, one run opened 7,632 incidents and attempted 7,632 drafts. Against a free tier
+        // of roughly 30 requests a minute that exhausts the quota in seconds, opens the circuit
+        // breaker, and every incident gets the deterministic fallback anyway — so the cost buys
+        // nothing. On a paid endpoint it is simply a bill.
+        //
+        // Skipped incidents are not left blank: the RCA endpoint still renders the deterministic
+        // timeline summary on demand, which is the same thing the fallback path produces.
+        if (!draftSeverities.contains(event.severity())) {
+            log.debug("skipping RCA for {} incident {}", event.severity(), key);
+            registry.counter("sentinel.rca.skipped", "severity", event.severity().name())
+                    .increment();
+            dedupe.markProcessed(key);
             ack.acknowledge();
             return;
         }

@@ -188,18 +188,22 @@ management:
   metrics:
     tags:
       application: sentinel
-  # Timers publish count/sum/max only unless histograms are switched on. The internals dashboard
-  # asks for p50/p95/p99 via histogram_quantile, which needs the _bucket series — without this the
-  # cycle-duration panels render empty and the scaling metric is unmeasurable.
-  distribution:
-    percentiles-histogram:
-      sentinel.slo.cycle.duration: true
-      sentinel.slo.evaluation.duration: true
-      sentinel.metrics.query.duration: true
-    slo:
-      # An explicit bucket at the evaluation interval, so "is p99 approaching 15s" is answerable
-      # exactly rather than by interpolation between whatever buckets Micrometer picked.
-      sentinel.slo.cycle.duration: 100ms,250ms,500ms,1s,2s,5s,10s,15s,30s
+    # Timers publish count/sum/max only unless histograms are switched on. The internals dashboard
+    # asks for p50/p95/p99 via histogram_quantile, which needs the _bucket series — without this the
+    # cycle-duration panels render empty and the scaling metric is unmeasurable.
+    #
+    # This block MUST sit under management.metrics, not management. At one level out it becomes
+    # management.distribution, which Spring Boot silently ignores: no error, no warning, the timer
+    # just keeps publishing as a summary and every percentile reads "no data".
+    distribution:
+      percentiles-histogram:
+        sentinel.slo.cycle.duration: true
+        sentinel.slo.evaluation.duration: true
+        sentinel.metrics.query.duration: true
+      slo:
+        # An explicit bucket at the evaluation interval, so "is p99 approaching 15s" is answerable
+        # exactly rather than by interpolation between whatever buckets Micrometer picked.
+        sentinel.slo.cycle.duration: 100ms,250ms,500ms,1s,2s,5s,10s,15s,30s
 
 resilience4j:
   circuitbreaker:

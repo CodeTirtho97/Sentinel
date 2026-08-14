@@ -6,6 +6,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.sentinel.config.SentinelProperties;
+import com.sentinel.correlation.BreachRef;
 import com.sentinel.correlation.CorrelationStore;
 import com.sentinel.events.InMemoryEventPublisher;
 import com.sentinel.events.SloBreachEvent;
@@ -137,7 +138,7 @@ class SloEvaluatorShardingTest {
             public void record(SloBreachEvent event) {}
 
             @Override
-            public List<SloBreachEvent> recentWithin(Duration window, Instant now) {
+            public List<BreachRef> recentWithin(Duration window, Instant now) {
                 return List.of();
             }
 

@@ -18,16 +18,23 @@ services:
     image: sentinel/synthetic-exporter:local
     restart: unless-stopped
     environment:
-      # The headline knob. Ramp 100 / 250 / 500 / 1000 / 2000 to find the ceiling.
+      # The headline knob. Ramp 100 / 250 / 500 — see docs/BENCHMARK_METHODOLOGY.md §3 for why
+      # three sizes, and why the top end is the 8GB Docker VM's limit rather than the evaluator's.
       SYNTHETIC_SERVICES: ${SYNTHETIC_SERVICES:-100}
       SYNTHETIC_CHAIN_LENGTH: ${SYNTHETIC_CHAIN_LENGTH:-5}
       SYNTHETIC_RPS: ${SYNTHETIC_RPS:-20}
       SYNTHETIC_ERROR_RATE: ${SYNTHETIC_ERROR_RATE:-0.0005}
       # Starts healthy. The breach storm is triggered at a known instant via POST /breach.
       SYNTHETIC_BREACH_FRACTION: ${SYNTHETIC_BREACH_FRACTION:-0.0}
-    # Rendering 2000 services' worth of exposition needs headroom the 400m fleet limit does not
-    # give, and an exporter being GC-throttled would understate the evaluator's real load.
-    mem_limit: 1g
+    # Rendering N services' worth of exposition needs headroom the 400m fleet limit does not give,
+    # and an exporter being GC-throttled would understate the evaluator's real load.
+    #
+    # 2g, not 1g: measured use is ~0.244 MiB per synthetic service (122 MiB at 500), so 4000
+    # services needs ~976 MiB. Against a 1g limit that is 95% of the container and, with
+    # -XX:MaxRAMPercentage=75 in the Dockerfile, well past the 768 MiB heap the JVM would size
+    # itself to — the exporter would OOM before the evaluator was ever stressed. The measurement
+    # apparatus must not be the thing that fails first.
+    mem_limit: 2g
     ports:
       - "8089:8080"
     healthcheck:

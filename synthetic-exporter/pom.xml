@@ -14,13 +14,13 @@
   <name>synthetic-exporter</name>
   <description>
     LOAD TESTING ONLY. Exposes N fake services' worth of Prometheus series so the evaluator can be
-    measured at 1000 services without running 1000 containers.
+    measured at 500 services without running 500 containers.
   </description>
 
   <dependencies>
     <!--
       Web only. No Micrometer here on purpose: this module writes the Prometheus exposition format
-      by hand. Registering ~24,000 real meters (2000 services x statuses x histogram buckets) would
+      by hand. Registering ~6,000 real meters (500 services x statuses x histogram buckets) would
       make the exporter itself the bottleneck being measured, which defeats the point of having it.
     -->
     <dependency>

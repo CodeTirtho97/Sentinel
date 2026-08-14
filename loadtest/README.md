@@ -9,7 +9,7 @@ the parameter values, and what the results prove about scaling up, is in
 
 ## The trick: synthetic-exporter
 
-You do not need 1000 real services to prove 1000 services. The evaluator queries Prometheus for
+You do not need 500 real services to prove 500 services. The evaluator queries Prometheus for
 time series and does not care what produced them, so `synthetic-exporter` exposes N fake services'
 worth of series from a single process. The load-test knob is one environment variable.
 
@@ -39,6 +39,12 @@ everything into one.
 | `../scripts/recovery-test.sh` | 4. Kill-to-steady-state, zero duplicates |
 | `../scripts/load-test.sh` | Orchestrates the full ramp for measurement 1 |
 | `k6/baseline.js` | Not a measurement — the demo's constant traffic generator |
+| `../scripts/check-k6.sh` | Not a measurement — parses every script with k6 itself |
+
+**Run `./scripts/check-k6.sh` after touching anything in `k6/`.** `node --check` is not a substitute:
+k6 0.52 runs on goja and compiles through Babel, which rejects ES2020 nullish coalescing (`??`) and
+optional chaining (`?.`) — both of which Node accepts silently. A script that passes `node --check`
+can still die the moment k6 loads it, twenty minutes into a run, after the stack is built and seeded.
 
 ## Running
 
@@ -47,11 +53,41 @@ make load-test-up SYNTHETIC_SERVICES=500   # stack + exporter, no demo fleet
 make load-test-seed                        # 1000 SLOs
 make load-test-storm                       # measurements 2 and 3
 make load-test-replay                      # measurement 5
-./scripts/recovery-test.sh                 # measurement 4
+make load-test-recovery                    # measurement 4
 make load-test-down
 
-make load-test                             # the full ramp — hours
+make load-test                             # the ramp — ~75 min
 ```
+
+`make` is not on the PATH in Git Bash on Windows. The equivalent, and what the docs use:
+
+```bash
+SYNTHETIC_SERVICES=500 docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
+  up -d --build postgres redpanda redis prometheus grafana synthetic-exporter sentinel
+SKIP_FLEET=1 ./scripts/wait-for-health.sh   # SKIP_FLEET is required — no demo fleet is running
+
+./scripts/measure.sh seed
+./scripts/measure.sh storm
+./scripts/measure.sh replay
+./scripts/measure.sh recovery
+
+./scripts/load-test.sh                      # the ramp
+```
+
+Both paths append every result to `docs/LOAD_TEST_RESULTS.raw.md`, and both refuse to run a
+measurement when no SLOs exist.
+
+**On Windows, run these from Git Bash, not PowerShell.** PowerShell has no `VAR=value cmd` prefix,
+and `bash` on the PATH is `C:\Windows\system32\bash.exe` — the WSL launcher, which fails because the
+default WSL distro is Docker's own and has no `/bin/bash`. From PowerShell:
+
+```powershell
+$env:SIZES="100"; $env:DURATION_MIN="3"
+& "C:\Program Files\Git\bin\bash.exe" ./scripts/load-test.sh
+```
+
+The scripts export `MSYS_NO_PATHCONV=1` themselves, without which Git Bash rewrites the
+container-side path in `docker run -v` and k6 starts against an empty mount.
 
 ## Things that will silently ruin a run
 

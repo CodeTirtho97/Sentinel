@@ -9,6 +9,11 @@ sentinel:
     # A 2m window cannot be 75% populated 45s into a demo. Lowered deliberately, not by accident.
     minimum-coverage: 0.3
     minimum-events: 60
+    # Compressed with the correlation window below, holding the production ratio (2m against a 5m
+    # window). The heartbeat has to stay strictly shorter than both the window and auto-resolve-after
+    # or a live incident ages out mid-outage — SloEvaluator rejects the config at startup rather than
+    # let that happen, so leaving this at the 2m default against a 2m window fails the boot.
+    breach-republish-interval: 45s
   slo:
     windows:
       critical:

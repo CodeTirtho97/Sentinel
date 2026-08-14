@@ -8,6 +8,16 @@
 # This profile therefore inherits every window from application.yml and changes only what the
 # measurement itself needs.
 sentinel:
+  # Pull the synthetic fleet's chain topology from the exporter at boot.
+  #
+  # The exporter generates its services at runtime from SYNTHETIC_SERVICES, so these edges cannot be
+  # written into YAML without pinning the fleet size. Without them every synthetic service is an
+  # isolated node in the dependency graph, the component walk returns a component of one for every
+  # breach, and the alert-collapse ratio measures exactly 1:1 — the product appearing to do nothing.
+  # Startup fails loudly if the fetch fails, because a silently unconnected fleet produces a
+  # confident and completely wrong headline number.
+  synthetic-topology-url: ${SYNTHETIC_TOPOLOGY_URL:http://synthetic-exporter:8080/topology.json}
+
   # The synthetic exporter starts emitting at full rate immediately, but Prometheus still needs to
   # accumulate enough samples for a 1h window to be judged. Left at the production 0.75, every
   # service reports InsufficientData for the first 45 minutes of a run and the evaluator does no
@@ -18,9 +28,10 @@ sentinel:
 
 logging:
   level:
-    # The evaluator logs each breach at WARN, so quietening it means ERROR, not WARN. At 2000
-    # services with 30% breaching that is 600 lines every cycle, synchronously, on the thread being
-    # timed — small per line, but it is measurement apparatus showing up inside the measurement.
+    # The evaluator logs each breach at WARN, so quietening it means ERROR, not WARN. At 500
+    # services with 30% breaching that is 300 lines every cycle (150 services x 2 SLOs each),
+    # synchronously, on the thread being timed — small per line, but it is measurement apparatus
+    # showing up inside the measurement.
     # The trade is that genuine evaluator warnings are hidden for the duration of a run; the
     # metrics (sentinel.slo.evaluations.total, sentinel.metrics.query.failures) still record them.
     com.sentinel.slo.SloEvaluator: ERROR

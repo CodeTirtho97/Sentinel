@@ -35,17 +35,17 @@ public class Correlator {
     public CorrelationResult correlate(SloBreachEvent event, Instant now) {
         store.record(event);
 
-        List<SloBreachEvent> recent = store.recentWithin(window, now);
+        List<BreachRef> recent = store.recentWithin(window, now);
         Set<String> breachedServices =
-                recent.stream().map(SloBreachEvent::serviceName).collect(Collectors.toCollection(LinkedHashSet::new));
+                recent.stream().map(BreachRef::serviceName).collect(Collectors.toCollection(LinkedHashSet::new));
         breachedServices.add(event.serviceName());
 
         Set<String> component = graph.componentOf(event.serviceName(), breachedServices);
 
-        List<SloBreachEvent> members = recent.stream()
-                .filter(b -> component.contains(b.serviceName()))
-                .sorted(Comparator.comparing(SloBreachEvent::detectedAt))
-                .toList();
+        // Already ordered by breach time: the store returns the ZSET range in score order, and the
+        // score is the earliest breach for that service.
+        List<BreachRef> members =
+                recent.stream().filter(b -> component.contains(b.serviceName())).toList();
 
         String origin = inferOrigin(members, event);
 
@@ -63,14 +63,14 @@ public class Correlator {
      * failing far more often than the reverse. This is a heuristic over a configured topology, not
      * causal inference, and is described as such.
      */
-    private String inferOrigin(List<SloBreachEvent> members, SloBreachEvent fallback) {
+    private String inferOrigin(List<BreachRef> members, SloBreachEvent fallback) {
         return members.stream()
-                .min(Comparator.comparing(SloBreachEvent::detectedAt)
-                        .thenComparing((SloBreachEvent b) -> graph.depthOf(b.serviceName()), Comparator.reverseOrder())
+                .min(Comparator.comparing(BreachRef::detectedAt)
+                        .thenComparing((BreachRef b) -> graph.depthOf(b.serviceName()), Comparator.reverseOrder())
                         // Last resort so two identical timestamps at equal depth still resolve the
                         // same way on every replay. Determinism matters more than the choice.
-                        .thenComparing(SloBreachEvent::serviceName))
-                .map(SloBreachEvent::serviceName)
+                        .thenComparing(BreachRef::serviceName))
+                .map(BreachRef::serviceName)
                 .orElseGet(fallback::serviceName);
     }
 }

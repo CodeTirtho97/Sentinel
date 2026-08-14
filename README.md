@@ -129,7 +129,7 @@ unreachable Prometheus all return `InsufficientData` — **Sentinel failing must
 incidents.**
 
 Burn rate is precomputed in Prometheus recording rules, so the evaluator issues a constant 30 instant
-queries per cycle whether the fleet is 8 services or 1,000.
+queries per cycle whether the fleet is 8 services or 500.
 
 ### Correlation
 
@@ -257,18 +257,30 @@ deployment is *not*, in [k8s/README.md](k8s/README.md).
 
 ## Performance
 
-**Measured**, on the demo profile with a clean stack:
+Measured on a single instance (`shardCount=1`), Intel Core Ultra 5 125H, Docker VM limited to
+8 GB / 8 cores. Full method and raw output in
+**[`docs/LOAD_TEST_RESULTS.md`](docs/LOAD_TEST_RESULTS.md)**.
 
-| | |
+| | Measured |
 |---|---|
-| Chaos injected → incident open in the API | ~30s |
-| Raw breaches absorbed by one incident | 94 |
-| `docker kill sentinel` → serving again | 19s, same incident, no duplicates |
+| **Alert collapse** | **5.00 : 1** — 2,000 failing services → **400 incidents**, mean correlated component size 5.00 |
+| **Scale** | **8,000 SLOs across 4,000 synthetic service series**, evaluated every 15s |
+| **Cycle latency** | **p99 ≤ 500 ms** — 3.3% of the interval, **30× headroom**; ceiling not reached |
+| **Query cost** | **constant 30 instant queries**, independent of fleet size |
+| **Detection** | 123–138s from injection to incident, against 115s predicted from the burn-rate maths |
+| **Idempotency** | 10,000 duplicate events → **exactly 1 incident**, 1 timeline row, 0 dead-letters |
+| **Recovery** | **40s** from `docker kill` mid-cycle to evaluating again, zero duplicate incidents |
+| **Under storm** | 50% of the fleet breaching: consumer lag bounded 182–356, memory 31–33% of the VM |
 
-**Not yet measured.** The load-test harness is built and runnable, but the evaluation-throughput
-ramp has not been run — [`docs/LOAD_TEST_RESULTS.md`](docs/LOAD_TEST_RESULTS.md) is a template. No
-throughput or ceiling claim appears anywhere in this repo until it has real numbers. The
-methodology, the parameter choices and what a result would prove about scaling are written down in
+Cycle cost is linear in fleet size with a shallow slope — `32.2 ms + 0.0497 ms/service`,
+R² = 0.9904 across a 40× range. **The test rig ran out of memory at ~16,000 series before the
+evaluator ran out of interval budget**, so the ceiling quoted here is the laptop's, not the
+system's.
+
+**The load test is also where five real defects were found** — including a correlation read that was
+quadratic in storm size, and an auto-resolver that silently closed 4,243 live incidents while their
+services were still failing. Each is written up with its mechanism, fix and re-measured result in
+[§6 of the results](docs/LOAD_TEST_RESULTS.md). Why each parameter has the value it does is in
 [`docs/BENCHMARK_METHODOLOGY.md`](docs/BENCHMARK_METHODOLOGY.md).
 
 ## Known limitations
@@ -282,7 +294,16 @@ Stated deliberately rather than discovered later.
 - **A cascade can briefly open more than one incident** when the ends of a chain trip a cycle before
   its middle. The transient one auto-resolves once it stops receiving breaches.
 - **Correlation is a hot key** — one Redis read per breach event, the wrong shape during a large
-  incident. The `CorrelationStore` seam exists so it can move to a Kafka Streams state store.
+  incident. Measured: at 2,000 concurrently breaching services this put the consumer 18,310 messages
+  behind before the window was reduced to service names. The `CorrelationStore` seam exists so it can
+  move to a Kafka Streams state store at the next order of magnitude.
+- **Readiness reports UP ~2.4s before the dependency graph is seeded.** `DependencySeeder` is an
+  `ApplicationRunner`, so it runs after the web server starts answering. A breach arriving in that
+  window correlates against an empty graph. Bounded to one startup window and does not corrupt later
+  incidents, but the graph belongs in the readiness contract.
+- **Recovery takes as long as the SLO window, not as long as the fix.** Burn rate is computed over a
+  rolling window, so a service that stops failing keeps its incident open until the bad samples age
+  out — roughly an hour on the production 1h window.
 - **Single tenant, single evaluator instance.** Sharding is built and rendered by the Helm chart but
   has not been run under load.
 - **`make demo` uses compressed SLO windows** so a cascade is visible in two minutes. Production
@@ -313,6 +334,7 @@ outside `slo.metrics` knows PromQL exists, and `slo.math` is pure Java — no Sp
 
 | | |
 |---|---|
+| **[Load test results](docs/LOAD_TEST_RESULTS.md)** | **all five measurements, the hardware they were taken on, and the five defects the storm exposed** |
 | [Design decisions](docs/DESIGN_DECISIONS.md) | why the incident is keyed on origin, why the dedupe key is set after commit, why the subgraph is induced, and the traps behind each |
 | [Scaling](docs/SCALING.md) | back-of-envelope load, what breaks first and in what order, the fix for each |
 | [Benchmark methodology](docs/BENCHMARK_METHODOLOGY.md) | the five measurements, why each parameter has its value, what a flat curve proves |

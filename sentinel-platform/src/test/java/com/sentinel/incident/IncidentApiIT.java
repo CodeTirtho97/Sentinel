@@ -2,6 +2,7 @@ package com.sentinel.incident;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.sentinel.correlation.BreachRef;
 import com.sentinel.correlation.CorrelationResult;
 import com.sentinel.events.SloBreachEvent;
 import com.sentinel.incident.api.IncidentResponses;
@@ -114,7 +115,7 @@ class IncidentApiIT extends AbstractIntegrationTest {
 
     private UUID openIncident(String serviceName) {
         SloBreachEvent event = Breaches.critical(serviceName, clock.instant());
-        return service.openOrAttach(new CorrelationResult(Set.of(serviceName), serviceName, List.of(event)), event)
+        return service.openOrAttach(new CorrelationResult(Set.of(serviceName), serviceName, List.of(BreachRef.of(event))), event)
                 .incidentId();
     }
 }

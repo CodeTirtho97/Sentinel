@@ -1,4 +1,4 @@
-.PHONY: help build test test-unit verify mutation coverage fmt fmt-check demo seed break break-both reset kill watch down logs clean ps \
+.PHONY: help build test test-unit verify mutation coverage fmt fmt-check demo ui seed break break-both reset kill watch down logs clean ps \
         load-test load-test-up load-test-seed load-test-storm load-test-replay load-test-recovery load-test-down \
         kind-up kind-load kind-deploy kind-demo kind-status kind-drain kind-down helm-lint helm-template k8s-sync k8s-check
 
@@ -8,8 +8,13 @@ MVN := ./mvnw
 # generator are excluded on purpose: eight extra JVMs competing for the same cores would mean
 # measuring the laptop rather than the evaluator.
 LOADTEST_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.loadtest.yml
+# Scratch file every measurement appends to. docs/LOAD_TEST_RESULTS.md is the record, this is the
+# tape it gets transcribed from.
+RAW := docs/LOAD_TEST_RESULTS.raw.md
 LOADTEST_SERVICES := postgres redpanda redis prometheus grafana synthetic-exporter sentinel
-K6 := docker run --rm --network sentinel_default -v "$(CURDIR)/loadtest/k6:/scripts:ro" \
+# MSYS_NO_PATHCONV stops Git Bash rewriting the container-side paths in -v and turning the mount
+# into an empty directory. Harmless everywhere else.
+K6 := MSYS_NO_PATHCONV=1 docker run --rm --network sentinel_default -v "$(CURDIR)/loadtest/k6:/scripts:ro" \
         -e SENTINEL=http://sentinel:8080 -e EXPORTER=http://synthetic-exporter:8080 grafana/k6:0.52.0
 
 help:
@@ -95,6 +100,21 @@ demo:
 	@echo "     Prometheus: http://localhost:9090"
 	@echo ""
 
+# Working on static/demo.html. The page is baked into the jar, so without this an edit needs a
+# full Maven rebuild to become visible. The overlay mounts the source directory into the running
+# container instead, making a browser refresh the entire loop.
+#
+# Deliberately a separate target rather than a flag on `demo`: what a reviewer runs must be the
+# packaged copy, or "it works on my machine" is a file the image has never seen.
+ui: export SPRING_PROFILES_ACTIVE=demo
+ui:
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+	./scripts/wait-for-health.sh
+	@echo ""
+	@echo "  ▶  http://localhost:3000 — edit static/demo.html and refresh. No rebuild."
+	@echo "     Ctrl-Shift-R if a stale copy is cached."
+	@echo ""
+
 # Everything the visualiser's buttons do, for anyone who prefers a terminal.
 seed:
 	./scripts/seed-slos.sh
@@ -116,30 +136,52 @@ watch:
 # Load testing. See loadtest/README.md and docs/LOAD_TEST_RESULTS.md.
 # ---------------------------------------------------------------------------
 
-# The full ramp: 100 / 250 / 500 / 1000 / 2000 services, ~10 minutes of sampling each plus
-# restarts. Override with SIZES and DURATION_MIN for something shorter.
+# The full ramp: 100 / 250 / 500 services, 20 minutes of sampling each plus restarts — ~75 min.
+# Three points establish a shape rather than a pair of dots, and 20 minutes is ~80 cycles, enough
+# that the p99 is not one outlier wearing a hat. Override with SIZES and DURATION_MIN; do the
+# smoke run first: SIZES="100" DURATION_MIN=3 ./scripts/load-test.sh
 load-test:
 	./scripts/load-test.sh
 
+# SKIP_FLEET=1 because the overlay deliberately does not start the eight demo-fleet JVMs; waiting
+# on them would be eight consecutive 300s timeouts and a failed run.
 load-test-up:
 	SYNTHETIC_SERVICES=$(or $(SYNTHETIC_SERVICES),100) $(LOADTEST_COMPOSE) up -d --build $(LOADTEST_SERVICES)
-	./scripts/wait-for-health.sh
+	SKIP_FLEET=1 ./scripts/wait-for-health.sh
 	@echo ""
+	@echo "  Services: $(or $(SYNTHETIC_SERVICES),100) synthetic"
 	@echo "  Exporter: http://localhost:8089/status"
+	@echo "  Sentinel: http://localhost:3000/actuator/prometheus"
 	@echo "  Next:     make load-test-seed"
 
 # Nothing is evaluated until SLOs exist. Skipping this measures an empty cycle.
 load-test-seed:
 	$(K6) run /scripts/seed-synthetic-slos.js
+	@echo ""
+	@echo "  SLOs now present: $$(curl -fsS -H 'X-Api-Key: local-dev-key' http://localhost:3000/api/v1/slos | grep -o '\"serviceName\"' | wc -l | tr -d ' ')"
 
+# Measurements 2-5 append to the raw file as well as printing. A number that exists only in a
+# terminal you later close is a number you have to measure again.
 load-test-storm:
-	$(K6) run -e FRACTION=$(or $(FRACTION),0.3) /scripts/breach-storm.js
+	@mkdir -p docs
+	@printf '\n## Breach storm + alert collapse (FRACTION=%s) — %s\n\n```\n' "$(or $(FRACTION),0.3)" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $(RAW)
+	$(K6) run -e FRACTION=$(or $(FRACTION),0.3) /scripts/breach-storm.js 2>&1 | tee -a $(RAW)
+	@printf '```\n' >> $(RAW)
+	@echo "  appended to $(RAW)"
 
 load-test-replay:
-	$(K6) run -e COUNT=$(or $(COUNT),10000) /scripts/duplicate-replay.js
+	@mkdir -p docs
+	@printf '\n## Duplicate replay (COUNT=%s) — %s\n\n```\n' "$(or $(COUNT),10000)" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $(RAW)
+	$(K6) run -e COUNT=$(or $(COUNT),10000) /scripts/duplicate-replay.js 2>&1 | tee -a $(RAW)
+	@printf '```\n' >> $(RAW)
+	@echo "  appended to $(RAW)"
 
 load-test-recovery:
-	./scripts/recovery-test.sh
+	@mkdir -p docs
+	@printf '\n## Recovery — %s\n\n```\n' "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $(RAW)
+	./scripts/recovery-test.sh 2>&1 | tee -a $(RAW)
+	@printf '```\n' >> $(RAW)
+	@echo "  appended to $(RAW)"
 
 load-test-down:
 	$(LOADTEST_COMPOSE) down -v

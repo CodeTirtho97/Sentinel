@@ -18,8 +18,15 @@ public interface CorrelationStore {
     /** Adds a breach to the window. Idempotent: re-recording the same event does not duplicate it. */
     void record(SloBreachEvent event);
 
-    /** Every breach detected within {@code window} of {@code now}, oldest first. */
-    List<SloBreachEvent> recentWithin(Duration window, Instant now);
+    /**
+     * Every service that breached within {@code window} of {@code now}, oldest first, one entry per
+     * service carrying its earliest breach still inside the window.
+     *
+     * <p>Deliberately not the events themselves. Correlation needs the service name to walk the
+     * graph and the timestamp to infer the origin, and nothing else — see {@link BreachRef} for why
+     * returning whole events made this the most expensive operation in the system.
+     */
+    List<BreachRef> recentWithin(Duration window, Instant now);
 
     /** Feeds the readiness probe in Phase 4. */
     boolean isHealthy();

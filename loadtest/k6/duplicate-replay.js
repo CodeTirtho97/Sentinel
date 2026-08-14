@@ -26,6 +26,12 @@ function incidentsFor(service) {
   return r.json().filter((i) => i.correlationKey === service || (i.affectedServices || []).includes(service));
 }
 
+// k6 0.52 compiles scripts through Babel, which does not support ES2020 nullish coalescing (`??`).
+// A missing counter reads as null here, and null means "never incremented", which is zero.
+function orZero(value) {
+  return value === null || value === undefined ? 0 : value;
+}
+
 function metric(body, name) {
   for (const line of body.split('\n')) {
     if (line.startsWith('#') || !line.startsWith(name)) continue;
@@ -58,7 +64,10 @@ export default function () {
   // fired on the first reading would pass before the duplicates had even been delivered.
   let stableFor = 0;
   let lastCount = -1;
+  let sinceReport = 0;
   const deadline = t0 + 10 * 60 * 1000;
+
+  console.log(`draining — waiting for the incident count to hold steady for 45s`);
 
   while (Date.now() < deadline && stableFor < 45) {
     sleep(5);
@@ -67,6 +76,15 @@ export default function () {
     else {
       stableFor = 0;
       lastCount = count;
+    }
+
+    sinceReport += 5;
+    if (sinceReport >= 30) {
+      sinceReport = 0;
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
+      console.log(
+        `  +${elapsed}s — incidents for ${SERVICE}: ${count}, steady for ${stableFor}s of 45s`,
+      );
     }
   }
 
@@ -91,12 +109,12 @@ export default function () {
   console.log(`Duplicate incidents:   ${Math.max(0, newIncidents - 1)}   (expected 0)`);
   console.log(`Breach timeline rows:  ${timelineEntries}   (expected 1)`);
   console.log(`Drain time:            ${drainSeconds.toFixed(1)} s`);
-  console.log(`Dead-lettered:         ${metric(metrics, 'sentinel_consumer_dlt_total') ?? 0}   (expected 0)`);
+  console.log(`Dead-lettered:         ${orZero(metric(metrics, 'sentinel_consumer_dlt_total'))}   (expected 0)`);
   console.log('==========================');
 
   check(null, {
     'exactly one incident': () => newIncidents === 1,
     'exactly one breach timeline entry': () => timelineEntries === 1,
-    'nothing dead-lettered': () => (metric(metrics, 'sentinel_consumer_dlt_total') ?? 0) === 0,
+    'nothing dead-lettered': () => orZero(metric(metrics, 'sentinel_consumer_dlt_total')) === 0,
   });
 }

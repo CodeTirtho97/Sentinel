@@ -3,15 +3,32 @@
 This document exists so that "how does this scale?" gets answered with a number and a named
 bottleneck rather than a hand-wave.
 
-The honest framing, and the one to lead with:
+## The measured answer
 
-> It is designed for the scale I built and measured it at. The first thing that breaks is the
-> single-instance evaluator, at roughly the point where cycle p99 approaches the 15s interval. The
-> fix is sharding by service hash, which the code already supports through configuration. The next
-> thing is the Redis correlation window, which would move to a Kafka Streams state store.
+> **8,000 SLOs across 4,000 synthetic service series on a single instance, evaluated every 15
+> seconds at p99 ≤ 500 ms — 3.3% of the interval.** I did not reach the evaluator's ceiling and
+> would rather say so than invent one: the 8 GB test rig ran out of memory near 16,000 series while
+> cycle latency was still using a thirtieth of its budget.
+>
+> Cost is linear and shallow — `32.2 ms + 0.0497 ms/service`, R² = 0.9904 across a 40× range —
+> because burn rate is precomputed in Prometheus recording rules, so a cycle issues a **constant 30
+> instant queries** whatever the fleet size. Only response parsing grows with N.
+>
+> **The first thing that actually broke was not the evaluator.** It was bottleneck #2 below, the
+> Redis correlation window, and it broke exactly as this document predicted it would: during a large
+> incident. At 2,000 concurrently breaching services the consumer fell 18,310 messages behind, and
+> the knock-on was worse than the slowness — stale data drove the auto-resolver to close 4,243 live
+> incidents. Fixed by storing service names rather than serialized events in the window and
+> announcing state changes rather than republishing every cycle; re-measured at lag 182–356 and a
+> 5:1 alert-collapse ratio. See [§6 of the results](LOAD_TEST_RESULTS.md).
+>
+> Beyond one instance the answer is sharding by service hash, which is a config change because
+> `ShardAssignment` was built in Phase 1 and has a test asserting the shards are disjoint and
+> complete. That path is rendered by the Helm chart and unit-tested, but has not been run under load.
 
 Measured figures live in [LOAD_TEST_RESULTS.md](LOAD_TEST_RESULTS.md). Everything below is the
-reasoning around them.
+reasoning around them — written before the measurements, and left as written except where the
+results contradicted it.
 
 ---
 
@@ -25,17 +42,22 @@ windows that is 400 queries every 15 seconds, and at 1000 services it is 4000 �
 Prometheus, not Sentinel, becomes the story.
 
 Because the recording rules aggregate `by (service)`, one instant query returns **every service as
-a vector**. The evaluator issues:
+a vector**. `SloEvaluator.fetchAll` deduplicates the work down to one fetch per distinct
+`(SLO type, latency threshold, window)` — not per SLO, and certainly not per service:
 
-| Query | Per cycle |
-|---|---|
-| `slo:error_ratio:{long}` and `slo:latency_ratio:{long}` | 2 |
-| `slo:error_ratio:{short}` and `slo:latency_ratio:{short}` | 2 |
-| `slo:requests:{window}` (minimum-events guard) | 1 |
-| `slo:samples:{window}` (coverage guard) | 1 |
+| Dimension | Distinct values | Why |
+|---|---|---|
+| Windows | 5 | `5m`, `30m`, `1h`, `6h`, `3d` — the three severities' long and short windows, with `6h` shared between HIGH-long and MEDIUM-short |
+| SLO types | 2 | `AVAILABILITY` and `LATENCY` |
+| Queries per fetch | 3 | the ratio series, `slo:requests:{window}` (minimum-events guard), `slo:samples:{window}` (coverage guard) |
 
-**Roughly six queries per cycle regardless of fleet size.** Adding the thousandth service adds a
-row to a vector that was already being fetched, not a query.
+**A constant 30 instant queries per cycle regardless of fleet size**, issued in parallel on virtual
+threads. Adding the thousandth service adds a row to a vector that was already being fetched, not a
+query.
+
+The one per-service query in the codebase is `budgetCounts`, and it is called exclusively from the
+`GET /slos/{id}/budget` endpoint — never from the evaluation loop. That separation is what makes the
+cost model linear, and it is worth re-checking if the measured curve ever bends upward.
 
 The rest of the per-cycle work is in-process: for each SLO, a map lookup and the burn-rate
 arithmetic from `slo.math`, which is pure and allocation-light. The fan-out runs on virtual threads,
@@ -46,8 +68,12 @@ cycle, and a fleet that is mostly healthy produces almost none. Postgres sees a 
 writes per hour — an incident is opened once and then widened, not rewritten. Redis holds a
 5-minute hot set that expires by TTL.
 
-Single instance is genuinely fine well past 500 services. The point of the load test is to find out
-exactly how far past.
+Single instance is genuinely fine well past 500 services. The load test asked exactly how far past,
+and the answer was **further than the rig could go**: 4,000 series at 3.3% of the interval budget,
+with the 8 GB VM binding near 16,000 before cycle latency became the constraint.
+
+The prediction in this section held. What it under-estimated was the *downstream* cost — see
+bottleneck #2, where the evaluator stayed comfortable while everything behind it fell over.
 
 ---
 
@@ -82,12 +108,29 @@ least afford it.
 **Symptom:** Redis command latency rising in step with breach volume, visible as consumer lag on
 `slo.breach.v1` while the evaluator itself is still comfortable.
 
+> **Measured, and this is the one that actually bit.** At 2,000 concurrently breaching services the
+> consumer fell **18,310 messages behind** and never recovered, while the evaluator sat at a fifth
+> of its interval — precisely the asymmetry described above.
+>
+> The cost was worse than predicted, because the window held *serialized events* rather than service
+> names. Each event therefore deserialized every event in the window: roughly **320 million JSON
+> parses per cycle**, quadratic in the size of the storm. Worse still, the backlog froze
+> `lastBreachAt`, and the auto-resolver read the staleness as recovery and **closed 4,243 incidents
+> whose services were still failing** — a silent all-clear during the exact event the product
+> exists for.
+>
+> Fixed without moving to Kafka Streams: the window now stores service names keyed by earliest
+> breach, and the evaluator announces state changes plus a two-minute heartbeat instead of
+> republishing every cycle. Events per run fell 543,600 → 32,000 and peak lag 18,310 → 182–356.
+> **The Kafka Streams migration remains the answer at the next order of magnitude**; it was simply
+> not what this bottleneck needed.
+
 ### 3. Prometheus itself
 
-A single Prometheus is a retention and query bottleneck long before the evaluator is. At 2000
-synthetic services the recording rules are evaluating range selectors over a large series count
-every 15 seconds, and the 3d and 30d rules are expensive enough that they are deliberately on
-slower groups.
+A single Prometheus is a retention and query bottleneck long before the evaluator is. At 500
+synthetic services — ~42k active series — the recording rules are evaluating range selectors over
+that series count every 15 seconds, and the 3d and 30d rules are expensive enough that they are
+deliberately on slower groups.
 
 **Symptom:** `sentinel.metrics.query.duration` rising while `sentinel.slo.evaluation.duration`
 stays flat — the evaluator waiting rather than working.

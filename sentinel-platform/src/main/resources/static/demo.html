@@ -13,7 +13,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sentinel — live</title>
+<!-- Rewritten by tick() to carry the open incident count, the way a monitoring tool should: the
+     tab is often the only part of this page visible while you are talking over something else. -->
+<title>Sentinel — SLO &amp; Incident Intelligence</title>
+<!-- The wordmark's shield-and-pulse, as a data URI: no request, no binary in the repo, and it
+     stays in sync with the header because there is only one place to change it. Stroke widths are
+     heavier than the header copy — the detail that reads at 32px turns to mud at 16. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2.2 20.4 5.5V11.7c0 5-3.6 8.7-8.4 10.1-4.8-1.4-8.4-5.1-8.4-10.1V5.5Z' fill='%2358a6ff' fill-opacity='.2' stroke='%2358a6ff' stroke-width='1.8' stroke-linejoin='round'/%3E%3Cpath d='M6.8 12.3h2.4l1.5-3.7 2.2 6.6 1.3-2.9h3' fill='none' stroke='%2358a6ff' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
   /*
     Colour carries meaning here, and only one meaning each. Before this the accent blue was doing
@@ -33,16 +39,36 @@
     --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
     --base:15px;
   }
+  /* Theme resolution, in the order a browser applies it:
+       1. :root above is dark, so dark is what you get with no CSS support for the rest of this.
+       2. The media query follows the OS — but only while the reader has not chosen, which is what
+          :not([data-theme="dark"]) encodes.
+       3. [data-theme] is an explicit choice from the toggle and beats the OS in both directions.
+     The palette is written twice on purpose. A media query cannot be part of a selector list, and
+     the alternative — indirecting every colour through a second layer of variables — costs more
+     to read than eight duplicated lines do to maintain. */
   @media (prefers-color-scheme: light) {
-    :root {
+    :root:not([data-theme="dark"]) {
       --bg:#f6f8fa; --panel:#fff; --raised:#f6f8fa; --line:#d1d9e0;
       --text:#1f2328; --dim:#59636e; --faint:#818b98;
       --ok:#1a7f37; --warn:#9a6700; --crit:#cf222e; --accent:#0969da; --origin:#8250df;
     }
   }
-  /* Presenter mode: everything scales off --base, so one variable resizes the page for a
-     projector or a shared screen without reflowing the layout. */
-  html.present { --base:18px; }
+  :root[data-theme="light"] {
+    --bg:#f6f8fa; --panel:#fff; --raised:#f6f8fa; --line:#d1d9e0;
+    --text:#1f2328; --dim:#59636e; --faint:#818b98;
+    --ok:#1a7f37; --warn:#9a6700; --crit:#cf222e; --accent:#0969da; --origin:#8250df;
+  }
+  /* The page repaints wholesale on a theme change; without this it is a jarring flash. Colour only
+     — transitioning layout properties here would animate the whole document. */
+  body, header, .status, .ctl, .card, .stat, .narrator, .rcacard, .tabbody, .step, .mark, .node {
+    transition:background-color .18s, border-color .18s, color .18s;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    body, header, .status, .ctl, .card, .stat, .narrator, .rcacard, .tabbody, .step, .mark, .node {
+      transition:none;
+    }
+  }
   * { box-sizing:border-box; }
   body {
     margin:0; padding:0 0 60px; background:var(--bg); color:var(--text);
@@ -72,17 +98,191 @@
   a { color:var(--accent); }
   .mono { font-family:var(--mono); }
 
-  /* ---- header ---- */
-  header { border-bottom:1px solid var(--line); background:var(--panel); padding:14px 0; margin-bottom:26px; }
-  .hrow { display:flex; justify-content:space-between; align-items:center; gap:18px; flex-wrap:wrap; }
-  h1 { font-size:16px; margin:0; font-weight:650; letter-spacing:-.2px; }
-  h1 span { color:var(--dim); font-weight:400; }
-  .links { display:flex; gap:6px; flex-wrap:wrap; }
-  .links a {
-    font-size:12.5px; padding:5px 11px; border-radius:6px; text-decoration:none;
-    border:1px solid var(--line); color:var(--dim); transition:.15s;
+  /* ---- header ----
+     Two tiers, because the row held two different kinds of thing pretending to be one. Identity and
+     liveness sit on top; the things you can press sit underneath. Previously the brand, two mode
+     toggles and four outbound links all rendered as the same grey pill, so the only way to tell a
+     button from a link was to click it.
+
+     Every size here is in em rather than px, so the header tracks --base and stays in proportion
+     with the page rather than being pinned to a fixed pixel size of its own. */
+  header { border-bottom:1px solid var(--line); background:var(--panel); margin-bottom:26px; }
+
+  .tier1 {
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    padding:13px 0 12px; flex-wrap:wrap;
   }
-  .links a:hover { border-color:var(--accent); color:var(--accent); }
+  /* Controls and the readout travel together on the right of tier 1: both are about the state of
+     this page, as against the links below, which all leave it. */
+  .headright { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:11px; min-width:0; }
+  /* .logo, not .mark — the ribbon already owns .mark, and inheriting its padding and border-right
+     collapsed this to a sliver. */
+  .brand .logo { width:2em; height:2em; color:var(--accent); flex:none; }
+  .wordmark { min-width:0; }
+  /* Caps need tracking or they set as a solid block; -.2px was tuned for mixed case and reads as
+     a typo here. */
+  h1 {
+    font-size:1em; margin:0; font-weight:750; line-height:1.12;
+    text-transform:uppercase; letter-spacing:.145em;
+  }
+  .tagline {
+    margin:3px 0 0; font-size:.72em; font-style:italic; font-weight:400;
+    color:var(--dim); line-height:1.25; letter-spacing:.005em;
+  }
+
+  /* ---- liveness readout ----
+     Liveness belongs in the chrome, not in the story. Without it a held page and a stalled one
+     look identical — you find out by watching a number and waiting for it not to change.
+
+     Two segments rather than one pill: the state and the time it was true are different facts, and
+     a divider says so more clearly than a gap. Read as an instrument, which is what it is. */
+  .status {
+    display:inline-flex; align-items:stretch; flex:none; white-space:nowrap;
+    font-size:.78em; background:var(--panel);
+    border:1px solid var(--line); border-radius:8px;
+    box-shadow:0 1px 2px rgba(0,0,0,.16);
+    /* No overflow:hidden — it would clip this element's own tooltip. The segments carry no
+       background, so there is nothing to clip to the rounded corners anyway. */
+  }
+  .status .seg { display:flex; align-items:center; gap:7px; padding:5px 11px; }
+  .status .seg + .seg { border-left:1px solid var(--line); }
+  /* Sentence case, not all-caps: SENTINEL is the wordmark and should be the only shouting on the
+     page. A second all-caps element competes with it for the same job. */
+  .status .lbl { font-size:.97em; font-weight:700; letter-spacing:.02em; color:var(--dim); }
+  /* Tabular figures, or the clock jitters every second as digit widths change — on a chip this
+     small the wobble is the thing you notice instead of the value. */
+  .status .at {
+    font-family:var(--mono); font-size:.95em; color:var(--faint);
+    font-variant-numeric:tabular-nums;
+  }
+  .status .dot { width:8px; height:8px; border-radius:50%; background:var(--faint); flex:none; }
+
+  .status.live { border-color:color-mix(in srgb,var(--ok) 42%,var(--line)); }
+  .status.live .dot { background:var(--ok); }
+  .status.live .lbl { color:var(--ok); }
+  .status.hold { border-color:color-mix(in srgb,var(--warn) 48%,var(--line)); }
+  .status.hold .dot { background:var(--warn); }
+  .status.hold .lbl { color:var(--warn); }
+  .status.down { border-color:color-mix(in srgb,var(--crit) 48%,var(--line)); }
+  .status.down .dot { background:var(--crit); }
+  .status.down .lbl { color:var(--crit); }
+
+  /* The ping is fired by a poll that came back, not by a timer. A decorative blink keeps blinking
+     while the page is stone dead; this one stops exactly when the data stops. */
+  @keyframes ping {
+    0%   { box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 55%,transparent); }
+    100% { box-shadow:0 0 0 7px transparent; }
+  }
+  .status.live.ping .dot { animation:ping .85s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .status.live.ping .dot { animation:none; } }
+
+  /* Tier 2 is only the outbound links now, so it centres. Nothing is competing with them for the
+     row and a left-aligned group under a full-width brand reads as leftover space. */
+  .tier2 {
+    display:flex; align-items:center; justify-content:center; gap:14px;
+    padding:9px 0 10px; border-top:1px solid var(--line); flex-wrap:wrap;
+  }
+  .controls, .links { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+
+  /* A control is a thing that changes this page; a link is a thing that leaves it. They now look
+     like two different objects — the control is raised and pressable, the link is flat until you
+     approach it. */
+  .ctl {
+    display:inline-flex; align-items:center; gap:7px;
+    font:inherit; font-size:.83em; font-weight:600; letter-spacing:.15px;
+    padding:6px 13px; border-radius:8px; cursor:pointer;
+    color:var(--dim); background:linear-gradient(180deg,var(--raised),var(--panel));
+    /* Tinted toward the accent rather than the neutral rule colour, so a control reads as
+       interactive while sitting still — blue is this page's "you can click it". Mixed against
+       --line rather than stated outright, so it resolves correctly in both palettes. */
+    border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));
+    box-shadow:0 1px 2px rgba(0,0,0,.2), inset 0 1px 0 rgba(255,255,255,.045);
+    transition:transform .14s, box-shadow .14s, color .14s, border-color .14s, background .14s;
+  }
+  .ctl:hover {
+    color:var(--text); border-color:var(--accent); transform:translateY(-1px);
+    box-shadow:0 4px 12px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.07);
+  }
+  .ctl:active { transform:translateY(0); box-shadow:inset 0 2px 5px rgba(0,0,0,.25); }
+  .ctl .ico { width:.95em; height:.95em; flex:none; }
+  .ctl .ico.play { display:none; }
+  /* Held state is amber, matching the status chip it causes — one cause, one colour, in two
+     places that agree. */
+  .ctl.on {
+    color:var(--warn); border-color:color-mix(in srgb,var(--warn) 55%,var(--line));
+    background:color-mix(in srgb,var(--warn) 13%,var(--raised));
+  }
+  .ctl.on:hover { border-color:var(--warn); }
+  .ctl.on .ico.pause { display:none; }
+  .ctl.on .ico.play { display:inline; }
+
+  /* The theme button shows where it takes you, not where you are — a moon while dark means "you
+     are in dark", which is the reading that sends people the wrong way. Driven off the attribute
+     the toggle sets, so the icon cannot drift out of step with the palette. */
+  .ico.moon { display:none; }
+  :root[data-theme="light"] .ico.sun { display:none; }
+  :root[data-theme="light"] .ico.moon { display:inline; }
+
+  .links { justify-content:center; gap:8px; }
+  /* Chips, not bare text. Four unadorned words in a row read as a footer; a destination you are
+     meant to visit should look like something you can pick up. Kept flat against the raised
+     controls above — a link leaves this page, a control acts on it, and the two should not
+     advertise themselves identically. */
+  .links a {
+    display:inline-flex; align-items:center; gap:8px;
+    font-size:.83em; font-weight:550; padding:7px 13px; border-radius:9px;
+    text-decoration:none; color:var(--dim);
+    background:var(--raised); border:1px solid var(--line);
+    transition:transform .14s, box-shadow .14s, color .14s, border-color .14s, background .14s;
+  }
+  .links a .lico { width:1.05em; height:1.05em; flex:none; color:var(--faint); transition:color .14s; }
+  /* Every one of these opens a new tab. The glyph says so before the click, which is the entire
+     job of the affordance. */
+  .links a::after { content:"↗"; font-size:.85em; color:var(--faint); transition:color .14s; }
+  .links a:hover {
+    color:var(--text); background:var(--panel);
+    border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
+    transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,0,0,.24);
+  }
+  .links a:hover .lico, .links a:hover::after { color:var(--accent); }
+  .links a:active { transform:translateY(0); box-shadow:none; }
+
+  /* The two Grafana dashboards are one kind of thing; the raw series and the API are another.
+     A rule says so more quietly than a heading would. */
+  .links .sep { width:1px; height:19px; background:var(--line); margin:0 3px; flex:none; }
+
+  /* ---- tooltips ----
+     Native title= waits about a second, renders in the OS font, and cannot be styled — fine for a
+     hint, wrong for the thing that tells you where a link goes. Pure CSS, no JS, and the delay is
+     short enough to feel like an answer rather than a wait. */
+  [data-tip] { position:relative; }
+  [data-tip]::before {
+    content:attr(data-tip);
+    position:absolute; top:calc(100% + 10px); left:50%;
+    transform:translateX(-50%) translateY(-4px);
+    z-index:60; width:max-content; max-width:246px; white-space:normal;
+    font:400 11.5px/1.5 var(--sans); letter-spacing:0; text-align:left;
+    color:var(--text); background:var(--raised);
+    border:1px solid var(--line); border-radius:8px; padding:8px 11px;
+    box-shadow:0 10px 28px rgba(0,0,0,.42);
+    opacity:0; pointer-events:none;
+    transition:opacity .16s .3s, transform .16s .3s;
+  }
+  [data-tip]:hover::before, [data-tip]:focus-visible::before {
+    opacity:1; transform:translateX(-50%) translateY(0);
+  }
+  /* The last links sit against the right edge of the container, where a centred tooltip would
+     hang off the page. */
+  [data-tip].tip-r::before { left:auto; right:0; transform:translateX(0) translateY(-4px); }
+  [data-tip].tip-r:hover::before, [data-tip].tip-r:focus-visible::before {
+    transform:translateX(0) translateY(0);
+  }
+  [data-tip].tip-l::before { left:0; right:auto; transform:translateX(0) translateY(-4px); }
+  [data-tip].tip-l:hover::before, [data-tip].tip-l:focus-visible::before {
+    transform:translateX(0) translateY(0);
+  }
+  @media (prefers-reduced-motion: reduce) { [data-tip]::before { transition:opacity .16s .3s; } }
 
   /* ---- step rail ---- */
   .rail { display:flex; gap:0; margin-bottom:22px; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
@@ -296,19 +496,100 @@
 </head>
 <body>
 
-<header><div class="wrap hrow">
-  <h1>Sentinel <span>— turning alert storms into incidents</span></h1>
-  <div class="links">
-    <button class="btn ghost" id="b-present" title="Larger type for a projector or shared screen">Presenter</button>
-    <button class="btn ghost" id="b-freeze" title="Stop polling so the screen holds still while you talk">Freeze</button>
-    <a href="http://localhost:3001/d/sentinel-fleet-slo" target="_blank" rel="noreferrer">Fleet dashboard</a>
-    <a href="http://localhost:3001/d/sentinel-internals" target="_blank" rel="noreferrer">Internals</a>
-    <a href="http://localhost:9090" target="_blank" rel="noreferrer">Prometheus</a>
-    <!-- Swagger, not /api/v1/incidents: every API route is behind X-Api-Key, so a raw link opened
-         in a new tab sends no header and returns 401. Swagger has an Authorize button. -->
-    <a href="/swagger-ui.html" target="_blank" rel="noreferrer">API (Swagger)</a>
+<header>
+  <div class="wrap tier1">
+    <div class="brand">
+      <!-- A shield carrying a vital sign: guarding something, and watching its pulse. Says what
+           this is in a way concentric rings did not — those read as a generic target. Inline so
+           it costs no request and takes currentColor, which keeps it correct in both themes. -->
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 2.4 20.2 5.6V11.7c0 4.9-3.5 8.5-8.2 9.9-4.7-1.4-8.2-5-8.2-9.9V5.6Z"
+              fill="currentColor" fill-opacity=".12"
+              stroke="currentColor" stroke-opacity=".45" stroke-width="1.4" stroke-linejoin="round"/>
+        <path d="M6.9 12.3h2.3l1.5-3.6 2.2 6.5 1.3-2.9h2.9"
+              fill="none" stroke="currentColor" stroke-width="1.7"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div class="wordmark">
+        <h1>Sentinel</h1>
+        <p class="tagline">Turning Alert Storms Into Incidents</p>
+      </div>
+    </div>
+    <div class="headright">
+      <div class="controls">
+        <button class="ctl tip-r" id="b-freeze"
+                data-tip="Pause polling so nothing moves while you talk over the screen. Nothing stops in the platform — only this page stops asking.">
+          <svg class="ico pause" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+            <rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/>
+          </svg>
+          <svg class="ico play" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+            <path d="M5 3.4v9.2a.8.8 0 0 0 1.22.68l7.2-4.6a.8.8 0 0 0 0-1.36l-7.2-4.6A.8.8 0 0 0 5 3.4Z"/>
+          </svg>
+          <span id="freeze-label">Hold the screen</span>
+        </button>
+
+        <button class="ctl tip-r" id="b-theme"
+                data-tip="Switch between the light and dark palette. Starts on whatever your system prefers, and remembers your choice on this browser.">
+          <svg class="ico sun" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+               stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <circle cx="8" cy="8" r="3.1" fill="currentColor" stroke="none"/>
+            <path d="M8 1.2v1.6M8 13.2v1.6M1.2 8h1.6M13.2 8h1.6M3.2 3.2l1.15 1.15M11.65 11.65l1.15 1.15M12.8 3.2l-1.15 1.15M4.35 11.65 3.2 12.8"/>
+          </svg>
+          <svg class="ico moon" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+            <path d="M13.9 10.4A6.2 6.2 0 0 1 5.6 2.1a6.2 6.2 0 1 0 8.3 8.3Z"/>
+          </svg>
+          <span id="theme-label">Light</span>
+        </button>
+      </div>
+
+      <div class="status tip-r" id="status" tabindex="0"
+           data-tip="Whether this page is still receiving fresh data from Sentinel, and the clock time of the last poll that came back. The dot pings once per poll.">
+        <span class="seg"><span class="dot"></span><span class="lbl" id="status-t">Connecting</span></span>
+        <span class="seg"><span class="at" id="status-at">--:--:--</span></span>
+      </div>
+    </div>
   </div>
-</div></header>
+
+  <div class="wrap tier2">
+    <div class="links">
+      <!-- Icons carry the destination faster than the label does, and they are what makes the
+           grouping legible at a glance: two charts, then a series and a payload. -->
+      <a href="http://localhost:3001/d/sentinel-fleet-slo" target="_blank" rel="noreferrer"
+         data-tip="Grafana — burn rate per service against the 1× / 6× / 14.4× threshold lines, plus error budget remaining.">
+        <svg class="lico" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+          <rect x="1.8" y="9" width="2.7" height="5.2" rx=".9"/>
+          <rect x="6.65" y="5.4" width="2.7" height="8.8" rx=".9"/>
+          <rect x="11.5" y="2.3" width="2.7" height="11.9" rx=".9"/>
+        </svg>Fleet SLOs</a>
+
+      <a href="http://localhost:3001/d/sentinel-internals" target="_blank" rel="noreferrer"
+         data-tip="Grafana — Sentinel watching itself: evaluation cycle p50/p95/p99, consumer lag, dead letters, RCA latency.">
+        <svg class="lico" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+          <path d="M2.4 12.4a6.4 6.4 0 1 1 11.2 0"/>
+          <path d="M8 12.4 11 7.9"/>
+        </svg>Sentinel internals</a>
+
+      <span class="sep" aria-hidden="true"></span>
+
+      <a href="http://localhost:9090" target="_blank" rel="noreferrer"
+         data-tip="Prometheus — the raw series and the recording rules that pre-compute burn rate before the evaluator ever asks.">
+        <svg class="lico" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+          <path d="M8 1.3c2.7 2.7 4.3 4.3 4.3 6.9a4.3 4.3 0 1 1-8.6 0c0-1.7.8-2.7 1.7-3.7 0 1.2.6 1.9 1.3 1.9.9 0 1.4-.9 1.4-2.3 0-1-.3-1.9-.1-2.8Z"/>
+        </svg>Raw metrics</a>
+
+      <!-- Swagger, not /api/v1/incidents: every API route is behind X-Api-Key, so a raw link opened
+           in a new tab sends no header and returns 401. Swagger has an Authorize button. -->
+      <a href="/swagger-ui.html" target="_blank" rel="noreferrer"
+         data-tip="Swagger UI — every endpoint, explorable. Press Authorize first and paste the API key, or calls return 401.">
+        <svg class="lico" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6.3 2.5c-1.7 0-2.2.9-2.2 2.1v1.9c0 1-.5 1.5-1.4 1.5.9 0 1.4.6 1.4 1.5v1.9c0 1.2.5 2.1 2.2 2.1"/>
+          <path d="M9.7 2.5c1.7 0 2.2.9 2.2 2.1v1.9c0 1 .5 1.5 1.4 1.5-.9 0-1.4.6-1.4 1.5v1.9c0 1.2-.5 2.1-2.2 2.1"/>
+        </svg>API explorer</a>
+    </div>
+  </div>
+</header>
 
 <div class="wrap">
 
@@ -409,10 +690,10 @@
   <div class="tabs">
     <button class="tab on" data-t="incidents">Incidents<span class="badge" id="tb-inc">0</span></button>
     <button class="tab" data-t="timeline">Timeline</button>
-    <button class="tab" data-t="rca">Root cause</button>
+    <button class="tab" data-t="rca">Root Cause</button>
     <button class="tab" data-t="feed">Activity</button>
-    <button class="tab" data-t="how">How it works</button>
-    <button class="tab" data-t="why">Why these choices</button>
+    <button class="tab" data-t="how">How It Works</button>
+    <button class="tab" data-t="why">Why These Choices</button>
   </div>
   <div class="tabbody">
     <div data-p="incidents"><div id="incidents"><div class="empty">No incidents. The fleet is meeting its objectives.</div></div></div>
@@ -534,7 +815,7 @@
 
   <p class="hint" style="margin-top:18px">
     Running the <code>demo</code> profile: SLO windows are compressed to 2m/1m so a cascade is visible
-    in two minutes. Production defaults are 1h/6h/3d — see the <b>Why these choices</b> tab.
+    in two minutes. Production defaults are 1h/6h/3d — see the <b>Why These Choices</b> tab.
   </p>
 </div>
 
@@ -772,15 +1053,59 @@ el('b-kill').onclick = async (e) => {
   refreshButtons();
 };
 
-/* Presenter mode and freeze: for talking over the page rather than racing it. */
-el('b-present').onclick = (e) => {
-  const on = document.documentElement.classList.toggle('present');
-  e.target.classList.toggle('on', on);
+/* ---------- header status ----------
+   The one piece of state the chrome carries: whether what you are looking at is current. Without
+   it a held page and a stalled one are indistinguishable — you find out by watching a number and
+   waiting for it not to change. The timestamp is only ever written by a successful poll, so it
+   keeps reading "last known good" while held or unreachable. */
+function setStatus(kind, text) {
+  el('status').className = 'status tip-r ' + kind;
+  el('status-t').textContent = text;
+}
+
+/* Fired by a poll that came back, never by a timer. A decorative blink keeps blinking on a page
+   whose backend died twenty minutes ago; this stops the moment the data does. */
+function pingStatus() {
+  const s = el('status');
+  s.classList.remove('ping');
+  void s.offsetWidth;   // restart the animation rather than ignoring the second trigger
+  s.classList.add('ping');
+}
+
+const TITLE = 'Sentinel — SLO & Incident Intelligence';
+function setTitle(state) {
+  document.title = state.down ? 'Sentinel — Unreachable'
+    : state.open ? `(${state.open}) ${state.open} Incident${state.open > 1 ? 's' : ''} Open — Sentinel`
+    : TITLE;
+}
+
+/* ---------- theme ----------
+   Two states, not three. A system/light/dark cycle means the first press can appear to do nothing
+   — when the OS is already dark, "system" to "dark" is a no-op with a changed label, and the
+   reader concludes the button is broken. Starting FROM the system preference gets the same
+   courtesy without that dead press. */
+const THEME_KEY = 'sentinel.theme';
+function applyTheme(mode) {
+  document.documentElement.setAttribute('data-theme', mode);
+  el('theme-label').textContent = mode === 'dark' ? 'Light' : 'Dark';   // where it takes you
+  try { localStorage.setItem(THEME_KEY, mode); } catch {}
+}
+(() => {
+  let stored = null;
+  try { stored = localStorage.getItem(THEME_KEY); } catch {}
+  applyTheme(stored || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
+})();
+el('b-theme').onclick = () => {
+  applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
 };
-el('b-freeze').onclick = (e) => {
+
+/* Hold: for talking over the page rather than racing it. The button is the cause and the chip is
+   the effect, so both go amber together. */
+el('b-freeze').onclick = () => {
   frozen = !frozen;
-  e.target.classList.toggle('on', frozen);
-  e.target.textContent = frozen ? 'Frozen' : 'Freeze';
+  el('b-freeze').classList.toggle('on', frozen);
+  el('freeze-label').textContent = frozen ? 'Resume' : 'Hold the screen';
+  setStatus(frozen ? 'hold' : 'live', frozen ? 'Held' : 'Live');
   setMsg(frozen ? 'Polling paused — the screen will hold still.' : '');
 };
 
@@ -964,6 +1289,8 @@ async function tick() {
   } catch (e) {
     // Unreachable means two completely different things depending on whether you just pressed
     // Kill, and reporting the wrong one would be worse than reporting nothing.
+    setStatus('down', killedAt ? 'Killed' : 'Unreachable');
+    setTitle({ down:true });
     if (killedAt) {
       const secs = Math.round((Date.now() - killedAt) / 1000);
       callout('down', 'Sentinel is down',
@@ -982,6 +1309,10 @@ async function tick() {
   }
   try { health = await getJSON('/api/v1/demo/status'); } catch { /* not the demo profile */ }
 
+  setStatus('live', 'Live');
+  el('status-at').textContent = clock();
+  pingStatus();
+
   // Back up after a kill. The claim is that the count did not move in either direction.
   if (killedAt) {
     const live = incidents.filter((i) => i.state !== 'RESOLVED').length;
@@ -997,6 +1328,7 @@ async function tick() {
   const open = incidents.filter((i) => i.state !== 'RESOLVED');
   openCount = open.length;
   resolvedCount = incidents.length - openCount;
+  setTitle({ open:openCount });
 
   const breaching = new Set(), origins = new Set();
   open.forEach((i) => { i.affectedServices.forEach((s) => breaching.add(s)); if (i.originService) origins.add(i.originService); });

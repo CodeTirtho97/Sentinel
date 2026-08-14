@@ -5,6 +5,7 @@ import com.sentinel.correlation.CorrelationStore;
 import com.sentinel.events.EventPublisher;
 import com.sentinel.events.SloBreachEvent;
 import com.sentinel.events.Topics;
+import com.sentinel.slo.domain.Severity;
 import com.sentinel.slo.domain.SloDefinition;
 import com.sentinel.slo.domain.SloType;
 import com.sentinel.slo.math.BurnRateCalculator;
@@ -25,9 +26,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -49,6 +53,18 @@ public class SloEvaluator {
     private final CorrelationStore correlationStore;
     private final Clock clock;
     private final Duration evaluationInterval;
+    private final Duration republishInterval;
+
+    /**
+     * What has already been announced, per SLO, so an ongoing breach is not re-announced every cycle.
+     *
+     * <p>In-memory and deliberately not persisted: after a restart the map is empty and every live
+     * breach is re-announced once, which is the correct thing to do — a fresh process has told
+     * nobody anything yet.
+     */
+    private final Map<UUID, Announced> announced = new ConcurrentHashMap<>();
+
+    private record Announced(Severity severity, Instant at) {}
 
     SloEvaluator(
             SloDefinitionRepository repository,
@@ -71,6 +87,18 @@ public class SloEvaluator {
         this.correlationStore = correlationStore;
         this.clock = clock;
         this.evaluationInterval = props.getEvaluation().getInterval();
+        this.republishInterval = props.getEvaluation().getBreachRepublishInterval();
+
+        // The heartbeat is what keeps lastBreachAt fresh on an incident that is still burning. Let
+        // it exceed either of these and a long outage goes quiet from the consumer's point of view,
+        // its incident ages past the threshold, and the auto-resolver closes a live incident — the
+        // same silent all-clear, arrived at from the other direction.
+        Duration window = props.getCorrelation().getWindow();
+        Duration resolveAfter = props.getCorrelation().getAutoResolveAfter();
+        if (republishInterval.compareTo(window) >= 0 || republishInterval.compareTo(resolveAfter) >= 0) {
+            throw new IllegalStateException("breach-republish-interval (%s) must be shorter than both the correlation window (%s) and auto-resolve-after (%s)"
+                    .formatted(republishInterval, window, resolveAfter));
+        }
     }
 
     /** One query per distinct (type, threshold, window) rather than one per service. */
@@ -122,14 +150,57 @@ public class SloEvaluator {
             //
             // Recording the whole cycle before publishing any of it closes that window: by the time
             // the first event is consumable, every breach it needs to correlate against is visible.
-            breaches.forEach(correlationStore::record);
-            breaches.forEach(event -> publisher.publish(Topics.SLO_BREACH, event.serviceName(), event));
+            // Announce state changes, not the passage of time.
+            //
+            // Re-publishing every breach on every cycle turns one ongoing outage into an unbounded
+            // event stream: at 4,000 breaching SLOs on a 15s cycle that is 16,000 events a minute,
+            // none of which tells any consumer something it does not already know. Measured, it
+            // buried the breach consumer — 18,310 messages behind — and each event carried a fresh
+            // deterministic id, so dedupe could not suppress any of it either.
+            //
+            // Alertmanager solves the same problem with repeat_interval, defaulted to four hours.
+            // A cycle-rate re-announcement is 960x that. What downstream actually needs is: tell me
+            // when something starts, when its severity moves, and often enough afterwards that I
+            // can tell the difference between "still burning" and "you have stopped talking to me".
+            List<SloBreachEvent> toAnnounce = breaches.stream()
+                    .filter(breach -> shouldAnnounce(breach, detectedAt))
+                    .toList();
+
+            // Anything that recovered forgets its history, so a fresh breach announces immediately
+            // rather than waiting out a heartbeat left over from the previous episode.
+            Set<UUID> stillBreaching =
+                    breaches.stream().map(SloBreachEvent::sloId).collect(Collectors.toSet());
+            announced.keySet().retainAll(stillBreaching);
+
+            int suppressed = breaches.size() - toAnnounce.size();
+            if (suppressed > 0) {
+                registry.counter("sentinel.breaches.suppressed").increment(suppressed);
+            }
+
+            toAnnounce.forEach(correlationStore::record);
+            toAnnounce.forEach(event -> publisher.publish(Topics.SLO_BREACH, event.serviceName(), event));
         } catch (RuntimeException e) {
             log.error("evaluation cycle failed", e);
             registry.counter("sentinel.slo.cycle.failures").increment();
         } finally {
             cycle.stop(registry.timer("sentinel.slo.cycle.duration"));
         }
+    }
+
+    /**
+     * True when this breach is news: newly broken, changed severity, or the heartbeat is due.
+     *
+     * <p>Records the decision as a side effect so the next cycle can compare against it.
+     */
+    private boolean shouldAnnounce(SloBreachEvent breach, Instant detectedAt) {
+        Announced previous = announced.get(breach.sloId());
+        boolean news = previous == null
+                || previous.severity() != breach.severity()
+                || !detectedAt.isBefore(previous.at().plus(republishInterval));
+        if (news) {
+            announced.put(breach.sloId(), new Announced(breach.severity(), detectedAt));
+        }
+        return news;
     }
 
     private Map<QueryKey, Map<String, ErrorRatio>> fetchAll(List<SloDefinition> slos) {
