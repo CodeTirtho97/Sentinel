@@ -46,7 +46,51 @@
     "list": []
   },
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "name": "Incidents opened",
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sentinel-prometheus"
+        },
+        "expr": "increase(sentinel_incidents_opened_total[2m]) > 0",
+        "step": "60s",
+        "titleFormat": "Incident opened",
+        "textFormat": "severity {{severity}}",
+        "tagKeys": "severity",
+        "useValueForTime": false,
+        "target": {
+          "refId": "Anno",
+          "expr": "increase(sentinel_incidents_opened_total[2m]) > 0",
+          "interval": "",
+          "legendFormat": ""
+        }
+      },
+      {
+        "name": "Sentinel restarted",
+        "enable": true,
+        "hide": false,
+        "iconColor": "purple",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sentinel-prometheus"
+        },
+        "expr": "(time() - process_start_time_seconds{job=\"sentinel\"}) < 90",
+        "step": "60s",
+        "titleFormat": "Sentinel restarted",
+        "textFormat": "process start time moved — the kill-and-restart beat",
+        "useValueForTime": false,
+        "target": {
+          "refId": "Anno",
+          "expr": "(time() - process_start_time_seconds{job=\"sentinel\"}) < 90",
+          "interval": "",
+          "legendFormat": ""
+        }
+      }
+    ]
   },
   "panels": [
     {
@@ -73,7 +117,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
@@ -147,7 +191,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
@@ -205,12 +249,12 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (result) (rate(sentinel_slo_evaluations_total_total[5m]))",
+          "expr": "sum by (result) (rate(sentinel_slo_evaluations_total[5m]))",
           "legendFormat": "{{result}}"
         }
       ],
@@ -250,7 +294,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
@@ -333,7 +377,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
@@ -386,7 +430,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
@@ -476,7 +520,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
@@ -530,7 +574,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
@@ -572,7 +616,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
@@ -625,6 +669,77 @@
     },
     {
       "type": "timeseries",
+      "title": "Root cause drafting — latency and fallbacks",
+      "description": "The asynchronous hop, as a number. Draft time can run to seconds without holding anything up, because the drafter is a separate consumer and detection never waits on it. A fallback is not an error: with no LLM_API_KEY the deterministic summariser writes the same four sections, which is what `make demo` shows. A rising fallback rate WITH a key configured is the signal worth chasing — that is the circuit breaker holding open against a failing provider. No _bucket series is published for this timer, so the latency line is a mean rather than a quantile.",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sentinel-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(sentinel_rca_duration_seconds_sum[5m])) / clamp_min(sum(rate(sentinel_rca_duration_seconds_count[5m])), 0.0001)",
+          "legendFormat": "mean draft time"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(sentinel_rca_fallbacks_total[5m])) * 60",
+          "legendFormat": "fallbacks/min"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 5
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fallbacks/min"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "opm"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
       "title": "Publish rate and failures",
       "gridPos": {
         "h": 7,
@@ -634,12 +749,12 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (topic) (rate(sentinel_publish_total_total[5m])) * 60",
+          "expr": "sum by (topic) (rate(sentinel_publish_total[5m])) * 60",
           "legendFormat": "{{topic}}"
         },
         {
@@ -692,7 +807,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
@@ -739,7 +854,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {
@@ -785,7 +900,7 @@
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "sentinel-prometheus"
       },
       "targets": [
         {

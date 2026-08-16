@@ -14,7 +14,7 @@ time series and does not care what produced them, so `synthetic-exporter` expose
 worth of series from a single process. The load-test knob is one environment variable.
 
 The eight real fleet services stay for the demo — they cascade properly and tell the story. The
-exporter exists purely for stress testing and is never started by `make demo`.
+exporter exists purely for stress testing and is never started by the demo stack.
 
 Synthetic services are named `synth-c<chain>-s<depth>` and arranged in chains of five:
 

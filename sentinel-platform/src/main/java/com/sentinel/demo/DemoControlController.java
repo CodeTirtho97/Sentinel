@@ -1,9 +1,13 @@
 package com.sentinel.demo;
 
 import com.sentinel.config.SentinelProperties;
+import com.sentinel.incident.IncidentRepository;
 import com.sentinel.slo.SloDefinitionService;
 import com.sentinel.slo.api.SloRequests;
 import com.sentinel.slo.domain.SloType;
+import com.sentinel.slo.metrics.ErrorRatio;
+import com.sentinel.slo.metrics.MetricsSource;
+import com.sentinel.slo.metrics.PromQlTemplates;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -45,19 +49,90 @@ public class DemoControlController {
     private static final Duration ROLLING_WINDOW = Duration.ofDays(30);
     private static final int LATENCY_THRESHOLD_MS = 500;
 
+    /** Matches what {@link #seed()} creates, so readiness judges against the same target. */
+    private static final double AVAILABILITY_OBJECTIVE = 0.999;
+
     private final SloDefinitionService slos;
     private final Map<String, String> fleet;
     private final RestClient http;
+    private final MetricsSource metrics;
+    private final SentinelProperties props;
+    private final IncidentRepository incidents;
 
-    DemoControlController(SloDefinitionService slos, SentinelProperties props, RestClient.Builder builder) {
+    DemoControlController(
+            SloDefinitionService slos,
+            SentinelProperties props,
+            RestClient.Builder builder,
+            MetricsSource metrics,
+            IncidentRepository incidents) {
         this.slos = slos;
+        this.props = props;
         this.fleet = props.getDemo().getFleet();
         this.http = builder.build();
+        this.metrics = metrics;
+        this.incidents = incidents;
     }
 
     public record ServiceStatus(String name, String url, boolean up, String detail) {}
 
     public record ActionResult(boolean ok, String message, List<String> details) {}
+
+    /** One service's current standing against its availability target. */
+    public record ServiceReadiness(String name, Double errorRatio, Double burnRate, boolean clear, String detail) {}
+
+    /** Whether it is safe to inject failure yet, and the per-service evidence for that answer. */
+    public record Readiness(boolean ready, int clear, int total, String window, List<ServiceReadiness> services) {}
+
+    /**
+     * Whether the start-up errors have left the burn-rate window yet.
+     *
+     * <p>This replaces a fixed client-side countdown that never consulted anything. That timer was
+     * wrong in both directions: on a warm stack it made you wait ninety seconds for errors that had
+     * aged out long before, and on a slow cold start it could release you while they were still
+     * there. The wait is now the measurement, so the page cannot claim a state the data disagrees
+     * with.
+     *
+     * <p>Judged on the CRITICAL long window, because that is the window the headline breach is
+     * computed over. A service is <em>clear</em> when its burn rate over that window is below 1.0,
+     * meaning it is not consuming error budget faster than the target allows and therefore cannot
+     * be the thing that breaches first and misattributes the origin.
+     *
+     * <p>One vector query for the whole fleet, not one per service. {@code errorRatios} is batched
+     * precisely so this stays constant in fleet size.
+     */
+    @GetMapping(value = "/readiness", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Readiness readiness() {
+        Duration window = props.getSlo().getWindows().values().stream()
+                .map(SentinelProperties.WindowSpec::getLongWindow)
+                .filter(java.util.Objects::nonNull)
+                .min(Duration::compareTo)
+                .orElse(Duration.ofHours(1));
+
+        Map<String, ErrorRatio> ratios = metrics.errorRatios(SloType.AVAILABILITY, null, window);
+        double errorBudget = 1.0 - AVAILABILITY_OBJECTIVE;
+
+        List<ServiceReadiness> out = new ArrayList<>(fleet.size());
+        int clear = 0;
+        for (String service : fleet.keySet()) {
+            ErrorRatio r = ratios.get(service);
+            if (r == null || Double.isNaN(r.ratio())) {
+                // No data cannot breach, so it cannot misattribute an origin either. Reported
+                // separately rather than silently counted as healthy.
+                out.add(new ServiceReadiness(service, null, null, true, "no data yet"));
+                clear++;
+                continue;
+            }
+            double burn = r.ratio() / errorBudget;
+            boolean ok = burn < 1.0;
+            if (ok) {
+                clear++;
+            }
+            out.add(new ServiceReadiness(
+                    service, r.ratio(), burn, ok, ok ? "clear" : "start-up errors still in window"));
+        }
+
+        return new Readiness(clear == fleet.size(), clear, fleet.size(), PromQlTemplates.windowLabel(window), out);
+    }
 
     /** Per-service health, so the page can show a green fleet before anything is broken. */
     @GetMapping(value = "/status", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -172,6 +247,54 @@ public class DemoControlController {
                 ok
                         ? "Chaos cleared. Breaches keep firing for a few minutes while the error data ages out of the windows."
                         : "Some resets failed",
+                details);
+    }
+
+    /**
+     * Wipes every incident and clears any injected failure, so the next run starts from nothing.
+     *
+     * <p>Deliberately an explicit action rather than something a page refresh does. Refresh is how
+     * the kill-and-restart beat is shown: halt the process, let Docker restart it, reload, and the
+     * incident is still there. A refresh that cleared data would delete exactly the evidence that
+     * beat exists to produce.
+     *
+     * <p>The child tables are {@code ON DELETE CASCADE}, so one statement is enough. The Redis
+     * correlation window is left alone on purpose: it carries a ten-minute TTL and the readiness
+     * gate already refuses to let anything be broken while recent errors are still in view, so it
+     * ages out on its own rather than needing a new method on the store.
+     */
+    @PostMapping(value = "/clear", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ActionResult clear() {
+        long removed = incidents.count();
+        incidents.deleteAllInBatch();
+
+        List<String> details = new ArrayList<>();
+        boolean ok = true;
+        for (Map.Entry<String, String> entry : fleet.entrySet()) {
+            try {
+                post(entry.getValue() + "/chaos/reset");
+            } catch (RuntimeException e) {
+                details.add(entry.getKey() + ": " + e.getMessage());
+                ok = false;
+            }
+        }
+
+        /* The caveat matters more than the count. Deleting rows does not delete the errors that
+         * caused them: those sit in the burn-rate window for as long as the window is wide, and
+         * the evaluator will quite correctly detect the same breach again and open a fresh
+         * incident within a cycle or two. Clearing straight after a break therefore looks like it
+         * did nothing at all, and saying so here is the difference between a broken-looking button
+         * and an understood one. */
+        Readiness after = readiness();
+        String caveat = after.ready()
+                ? " Nothing is failing now, so the slate stays clean."
+                : " Note: %d of %d services still have errors inside the %s window, so the evaluator may open a new incident until those age out."
+                        .formatted(after.total() - after.clear(), after.total(), after.window());
+
+        log.info("demo clear: removed {} incident(s), window clean: {}", removed, after.ready());
+        return new ActionResult(
+                ok,
+                "Cleared %d incident(s). Reliability targets are untouched.".formatted(removed) + caveat,
                 details);
     }
 

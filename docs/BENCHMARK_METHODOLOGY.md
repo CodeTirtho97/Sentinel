@@ -546,7 +546,7 @@ process was supposed to produce, and what it actually did.
 | Delete the `STATUS: NOT YET MEASURED` banner | removed |
 | State the ceiling honestly | **"ceiling not reached"** — p99 ≤ 500 ms at 4,000 series against a 15 s interval; the 8 GB rig binds near 16,000 series first |
 | Ceiling at the front of [`SCALING.md`](SCALING.md) | it now opens with the measured answer, and bottleneck #2 carries what actually happened |
-| Only then, the résumé bullets | CLAUDE.md §18, every figure traceable to the results file |
+| Only then, the résumé bullets | written last, every figure traceable to the results file |
 | Headline numbers in the README | Performance section and Known limitations, both linked to the results |
 
 **What the ramp actually showed**, against what §6 predicted:

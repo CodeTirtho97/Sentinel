@@ -99,6 +99,14 @@ services:
       - "3001:3000"
     depends_on:
       - prometheus
+    # Present so `docker compose up -d --wait` waits for Grafana to actually serve rather than
+    # merely to be running. Without it --wait returns while the dashboards are still 502-ing,
+    # which is the one moment someone is most likely to open them.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   # ONE image, eight instances — not eight projects. Two deliberately disconnected trees:
   #
@@ -204,6 +212,12 @@ services:
       REDIS_PORT: "6379"
       SHARD_INDEX: "0"
       SHARD_COUNT: "1"
+      # Off by default so a new stack starts at zero incidents and the first run you see is your
+      # own. The backfill exists to stop the product looking broken when empty, but it also makes
+      # a first-time reader think the demo has already been run twenty-five times, and a page that
+      # has to explain its own sample data is worse than one that starts blank.
+      # DEMO_SEED=true restores the 30 days of synthetic history.
+      DEMO_SEED: ${DEMO_SEED:-false}
     ports:
       # The front door. http://localhost:3000 opens the demo page; Grafana, Prometheus and Swagger
       # are all one link from there. Still 8080 inside the container, so nothing on the Compose

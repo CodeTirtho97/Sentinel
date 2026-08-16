@@ -198,7 +198,7 @@
         burn-rate comparison proves the line ran; only a surviving `>=` -> `>` mutant proves the
         boundary is actually asserted — and that boundary is what makes CRITICAL fire at 14.4.
 
-        Not bound to a phase: run explicitly via `make mutation` or in CI.
+        Not bound to a phase: run explicitly via `./mvnw -pl sentinel-platform test-compile org.pitest:pitest-maven:mutationCoverage` or in CI.
       -->
       <plugin>
         <groupId>org.pitest</groupId>

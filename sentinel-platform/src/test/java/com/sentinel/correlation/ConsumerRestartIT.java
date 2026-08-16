@@ -52,8 +52,8 @@ class ConsumerRestartIT extends AbstractIntegrationTest {
      * <p>A backlog released after a restart arrives in whatever order the three partitions are
      * drained in, and keying by service name only guarantees ordering <i>within</i> a service. If
      * checkout is processed before ledger, checkout opens its own incident — the breached set at
-     * that moment is {checkout} alone, and the correlation key is frozen at creation by design
-     * (§7), so it cannot later be folded into ledger's.
+     * that moment is {checkout} alone, and the correlation key is frozen at creation by design,
+     * so it cannot later be folded into ledger's.
      *
      * <p>That is the documented boundary of time-window correlation, not a defect, and asserting a
      * single incident here would be asserting a guarantee the design does not make. What must hold

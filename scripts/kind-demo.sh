@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Same sequence as `make kind-demo`, for machines without make (Windows/Git Bash).
 #
-# Compose is the primary path — ./scripts/demo.sh is the two-minute demo and needs none of this.
+# Compose is the primary path — `docker compose up -d --wait` is the two-minute demo and needs none of this.
 # See k8s/README.md for what the Kubernetes deployment demonstrates and what it does not.
 
 cd "$(dirname "$0")/.."

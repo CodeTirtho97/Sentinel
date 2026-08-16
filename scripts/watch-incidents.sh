@@ -35,7 +35,7 @@ stamp() { printf '%s[t+%3ds]%s ' "$DIM" "$((SECONDS - START))" "$RESET"; }
 banner() {
   echo "${BOLD}Sentinel — live incident feed${RESET}   ${DIM}polling ${SENTINEL} every ${INTERVAL}s${RESET}"
   echo "${DIM}$(printf '%.0s─' {1..78})${RESET}"
-  stamp; echo "watching. break something with ./scripts/inject-cascade.sh"
+  stamp; echo "watching. break something with ./scripts/demo.sh break"
 }
 
 banner

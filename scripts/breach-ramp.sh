@@ -91,8 +91,7 @@ active_incidents() { sum_metric "$1" "sentinel_incidents_active"; }
 breaches_published() { sum_metric "$1" "sentinel_publish_total" 'topic="slo.breach'; }
 breach_lag() { max_metric "$1" "kafka_consumer_fetch_manager_records_lag" "slo_breach"; }
 
-# The direct collapse measure: mean services per correlated component. CLAUDE.md calls this the
-# money metric. A mean of 1.0 means correlation suppressed nothing; chains are 5 deep, so a healthy
+# The direct collapse measure: mean services per correlated component — the money metric. A mean of 1.0 means correlation suppressed nothing; chains are 5 deep, so a healthy
 # reading approaches 5.0. Reported as a delta so each step is measured on its own breaches.
 component_count() { sum_metric "$1" "sentinel_correlation_component_size_count"; }
 component_sum() { sum_metric "$1" "sentinel_correlation_component_size_sum"; }

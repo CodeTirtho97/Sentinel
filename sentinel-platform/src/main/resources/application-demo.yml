@@ -36,7 +36,7 @@ sentinel:
     # stapled together just because they happened in the same demo.
     window: 2m
     # Two times the window, matching the production ratio. This is what makes recovery visible:
-    # on the 10m production default, `reset-chaos.sh` is followed by ten minutes of staring at an
+    # on the 10m production default, `./scripts/demo.sh reset` is followed by ten minutes of staring at an
     # incident that is plainly over, which is longer than the entire demo.
     auto-resolve-after: 4m
     # The sweep has to be well inside the resolve threshold or the incident lingers for up to a

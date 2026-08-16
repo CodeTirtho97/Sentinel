@@ -86,7 +86,7 @@
               <endWithNewline/>
             </java>
           </configuration>
-          <!-- Not bound to a phase: `make fmt` applies, CI runs spotless:check. -->
+          <!-- Not bound to a phase: `./mvnw spotless:apply` applies, CI runs spotless:check. -->
         </plugin>
         <plugin>
           <groupId>org.jacoco</groupId>

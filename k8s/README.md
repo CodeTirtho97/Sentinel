@@ -1,6 +1,6 @@
 # Sentinel on Kubernetes
 
-**Docker Compose is the primary path.** `make demo` at the repository root is the two-minute demo,
+**Docker Compose is the primary path.** `docker compose up -d --wait` at the repository root is the two-minute demo,
 and nothing here is needed to run it. This directory is a second, real deployment target — the same
 images, the same behaviour, expressed as a Helm chart on a local `kind` cluster.
 

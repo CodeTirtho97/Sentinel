@@ -42,6 +42,53 @@
     "from": "now-30m",
     "to": "now"
   },
+  "annotations": {
+    "list": [
+      {
+        "name": "Incidents opened",
+        "enable": true,
+        "hide": false,
+        "iconColor": "red",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sentinel-prometheus"
+        },
+        "expr": "increase(sentinel_incidents_opened_total[2m]) > 0",
+        "step": "60s",
+        "titleFormat": "Incident opened",
+        "textFormat": "severity {{severity}}",
+        "tagKeys": "severity",
+        "useValueForTime": false,
+        "target": {
+          "refId": "Anno",
+          "expr": "increase(sentinel_incidents_opened_total[2m]) > 0",
+          "interval": "",
+          "legendFormat": ""
+        }
+      },
+      {
+        "name": "Sentinel restarted",
+        "enable": true,
+        "hide": false,
+        "iconColor": "purple",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "sentinel-prometheus"
+        },
+        "expr": "(time() - process_start_time_seconds{job=\"sentinel\"}) < 90",
+        "step": "60s",
+        "titleFormat": "Sentinel restarted",
+        "textFormat": "process start time moved — the kill-and-restart beat",
+        "useValueForTime": false,
+        "target": {
+          "refId": "Anno",
+          "expr": "(time() - process_start_time_seconds{job=\"sentinel\"}) < 90",
+          "interval": "",
+          "legendFormat": ""
+        }
+      }
+    ]
+  },
   "templating": {
     "list": [
       {

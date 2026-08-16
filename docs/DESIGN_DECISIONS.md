@@ -50,7 +50,7 @@ a dependency from its callers.
 
 **A real limit worth knowing before someone finds it.** Latency propagates additively up a
 synchronous chain, so the entry point breaches first whenever the injected latency is below the
-leaf's own threshold but above it once accumulated. `inject-cascade.sh` adds 600ms rather than 400
+leaf's own threshold but above it once accumulated. `./scripts/demo.sh break` adds 600ms rather than 400
 so `ledger-service` breaks its own 500ms objective in the same cycle as its callers. With 400ms the
 platform reports `checkout-service` as the origin — and it is not malfunctioning when it does. It is
 faithfully reporting which service degraded first. Earliest-plus-depth is a heuristic over a
@@ -166,7 +166,7 @@ proves the boundary is actually asserted.
 
 ## The demo profile
 
-`make demo` compresses the SLO windows to 2m/1m, 5m/2m and 15m/5m, with a 2m correlation window and
+The `demo` profile compresses the SLO windows to 2m/1m, 5m/2m and 15m/5m, with a 2m correlation window and
 a 4m auto-resolve — the production 1:2 ratio, scaled down.
 
 **This is required for the demo to work, not a convenience.** Run the arithmetic on production
@@ -199,7 +199,7 @@ that works and one that looks broken.
 
 ### The fallback is a feature, not a degraded mode
 
-`make demo` must work with no API key — a reviewer is not going to sign up for Groq to try the
+The demo must work with no API key — a reviewer is not going to sign up for Groq to try the
 project. With no key, `TemplateRcaDrafter` writes the same four sections from the same timeline,
 deterministically, with no network call.
 

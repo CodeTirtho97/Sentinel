@@ -1,4 +1,14 @@
-.PHONY: help build test test-unit verify mutation coverage fmt fmt-check demo ui seed break break-both reset kill watch down logs clean ps \
+# This file holds only what does not fit on one line.
+#
+# Running the demo and building the project are single commands that work identically on Windows,
+# macOS and Linux, so wrapping them here bought nothing and cost a `make` dependency that Windows
+# does not ship. They live in README.md instead. What remains is genuine multi-step orchestration:
+# the load-test measurement sequence and the kind/Helm path.
+#
+#   docker compose up -d --wait     start the demo stack
+#   ./scripts/demo.sh               terminal control for it
+#   ./mvnw verify                   build and test
+.PHONY: help \
         load-test load-test-up load-test-seed load-test-storm load-test-replay load-test-recovery load-test-down \
         kind-up kind-load kind-deploy kind-demo kind-status kind-drain kind-down helm-lint helm-template k8s-sync k8s-check
 
@@ -18,22 +28,11 @@ K6 := MSYS_NO_PATHCONV=1 docker run --rm --network sentinel_default -v "$(CURDIR
         -e SENTINEL=http://sentinel:8080 -e EXPORTER=http://synthetic-exporter:8080 grafana/k6:0.52.0
 
 help:
-	@echo "build      - compile + package all modules (skips tests)"
-	@echo "test       - run everything: unit tests + Testcontainers integration suite"
-	@echo "test-unit  - unit tests only; fast, needs no Docker"
-	@echo "mutation   - PIT mutation testing on slo.math (the only package it runs on)"
-	@echo "coverage   - JaCoCo report at sentinel-platform/target/site/jacoco/index.html"
-	@echo "fmt        - apply spotless formatting"
-	@echo "demo       - bring the stack up, then drive it from http://localhost:3000"
-	@echo "seed       - create SLOs for all 8 services      (the UI's 'Start demo')"
-	@echo "break      - break ledger-service, one cascade   (the UI's 'Break order path')"
-	@echo "break-both - break both leaves, two incidents    (the UI's 'Break both paths')"
-	@echo "reset      - clear all injected failure          (the UI's 'Reset')"
-	@echo "kill       - halt Sentinel mid-incident          (the UI's 'Kill Sentinel')"
-	@echo "watch      - live incident narration in the terminal"
-	@echo "down       - stop the stack and remove volumes"
-	@echo "logs       - tail sentinel-platform logs"
-	@echo "clean      - mvn clean"
+	@echo "The demo and the build need no make — see README.md:"
+	@echo "  docker compose up -d --wait   start the stack, wait until healthy"
+	@echo "  ./scripts/demo.sh             seed / break / reset / kill / status"
+	@echo "  ./scripts/watch-incidents.sh  live incident narration"
+	@echo "  ./mvnw verify                 build + unit + integration tests"
 	@echo ""
 	@echo "load testing (see loadtest/README.md):"
 	@echo "  load-test          - the full evaluation-throughput ramp; takes hours"
@@ -55,82 +54,6 @@ help:
 	@echo "  helm-lint    - lint and render the chart; needs no cluster"
 	@echo "  k8s-sync     - copy shared assets from infra/ and loadtest/ into the chart"
 	@echo "  k8s-check    - fail if those copies have drifted"
-
-build:
-	$(MVN) -q -DskipTests package
-
-# Integration tests are *IT and run under failsafe, so they need Docker for Testcontainers.
-test: verify
-
-verify:
-	$(MVN) verify
-
-test-unit:
-	$(MVN) test
-
-# slo.math only. That package is pure arithmetic, so a surviving mutant is a real gap in the
-# assertions rather than an artefact of something being hard to reach — and the boundary it guards
-# (burn >= threshold, not >) is what makes CRITICAL fire at exactly 14.4.
-mutation:
-	$(MVN) -pl sentinel-platform test-compile org.pitest:pitest-maven:mutationCoverage
-	@echo "Report: sentinel-platform/target/pit-reports/index.html"
-
-coverage:
-	$(MVN) -pl sentinel-platform verify
-	@echo "Report: sentinel-platform/target/site/jacoco/index.html"
-
-fmt:
-	$(MVN) -q spotless:apply
-
-fmt-check:
-	$(MVN) -q spotless:check
-
-# Brings the stack up and hands over to the visualiser. Seeding and chaos are buttons there, so the
-# demo needs exactly one command and Docker Desktop running.
-#
-# The demo profile compresses the SLO windows so a cascade is visible inside two minutes.
-demo: export SPRING_PROFILES_ACTIVE=demo
-demo:
-	docker compose up -d --build
-	./scripts/wait-for-health.sh
-	@echo ""
-	@echo "  ▶  Open http://localhost:3000  and press 'Start demo'"
-	@echo ""
-	@echo "     Grafana:    http://localhost:3001  (anonymous access, no login)"
-	@echo "     Prometheus: http://localhost:9090"
-	@echo ""
-
-# Working on static/demo.html. The page is baked into the jar, so without this an edit needs a
-# full Maven rebuild to become visible. The overlay mounts the source directory into the running
-# container instead, making a browser refresh the entire loop.
-#
-# Deliberately a separate target rather than a flag on `demo`: what a reviewer runs must be the
-# packaged copy, or "it works on my machine" is a file the image has never seen.
-ui: export SPRING_PROFILES_ACTIVE=demo
-ui:
-	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
-	./scripts/wait-for-health.sh
-	@echo ""
-	@echo "  ▶  http://localhost:3000 — edit static/demo.html and refresh. No rebuild."
-	@echo "     Ctrl-Shift-R if a stale copy is cached."
-	@echo ""
-
-# Everything the visualiser's buttons do, for anyone who prefers a terminal.
-seed:
-	./scripts/seed-slos.sh
-break:
-	./scripts/inject-cascade.sh
-break-both:
-	./scripts/inject-two-failures.sh
-reset:
-	./scripts/reset-chaos.sh
-# Halts the process with an open incident. Docker restarts it; the incident must come back with no
-# duplicates. Demo profile only — the endpoint does not exist otherwise.
-kill:
-	curl -fsS -X POST -H "X-Api-Key: $${SENTINEL_API_KEY:-local-dev-key}" \
-		http://localhost:3000/api/v1/demo/kill && echo ""
-watch:
-	./scripts/watch-incidents.sh
 
 # ---------------------------------------------------------------------------
 # Load testing. See loadtest/README.md and docs/LOAD_TEST_RESULTS.md.

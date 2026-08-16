@@ -460,4 +460,4 @@ worth of series from one process. The load-test knob is a single environment var
 500 containers and 32GB of RAM, which is what makes these numbers measurable on a laptop at all.
 
 The eight real fleet services stay for the demo — they cascade properly and tell the story. The
-exporter only ever stress-tests, and is never part of `make demo`.
+exporter only ever stress-tests, and is never part of the demo stack.

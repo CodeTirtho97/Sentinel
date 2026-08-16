@@ -108,9 +108,9 @@ jobs:
           name: integration-test-reports
           path: '**/target/failsafe-reports/**'
 
-  # The claim in the README is that a stranger can clone and run `make demo`. This checks the
-  # images actually build from a clean checkout, which is the half of that claim CI can verify
-  # without standing the whole stack up.
+  # The claim in the README is that a stranger can clone and run `docker compose up -d --wait`.
+  # This checks the images actually build from a clean checkout, which is the half of that claim
+  # CI can verify without standing the whole stack up.
   docker:
     name: Docker images build
     runs-on: ubuntu-latest

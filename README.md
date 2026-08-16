@@ -23,26 +23,41 @@ Sentinel does three things Prometheus deliberately does not:
 - **Lifecycle and AI RCA** — incidents move through a state machine; an LLM drafts a root-cause
   hypothesis from the correlated timeline, with a deterministic fallback when no model is configured
 
+![One incident instead of 88 alerts, with a drafted root cause](docs/images/Sentinel_3.png)
+
+<sub>**The whole product in one screen.** `ledger-service` was broken; 88 breaches landed across six
+connected services. A conventional setup pages you once per line on the left. Sentinel raises **one**
+incident, names `ledger-service` as the origin, and drafts the root cause — here from the
+deterministic summariser, because no API key was set.</sub>
+
 ## Quickstart
 
 Requires Docker Desktop. Java and Maven come from the containers.
 
 ```bash
-make demo          # or: ./scripts/demo.sh   (Windows / no make)
+docker compose up -d --build --wait      # any OS, any shell — no make, no scripts
 ```
 
-Open **<http://localhost:3000>** and press **Start demo**. Seeding, breaking things and resetting
-are buttons; the page shows the topology going red, incidents opening, and the alert-collapse ratio
-as it happens.
+That is the whole quickstart. There is no `make` step, no shell script and no environment variable
+to export first — the compose file already defaults `SPRING_PROFILES_ACTIVE` to `demo`, and `--wait`
+blocks until every health check passes, so when the command returns the stack is genuinely ready.
+
+Open **<http://localhost:3000>** and press **Start demo**.
+
+![The demo console, healthy and armed](docs/images/Sentinel_1.png)
+
+<sub>Four guided steps across the top, the live state in plain words, and a **NEXT** line that always
+names the button to press — so the page is never waiting on you without saying so. Seeding, breaking
+a service, killing the process and resetting are all buttons; nothing here needs a terminal.</sub>
 
 | | |
 |---|---|
 | Demo console | <http://localhost:3000> |
 | Swagger UI | <http://localhost:3000/swagger-ui.html> |
-| Grafana | <http://localhost:3001> (anonymous) |
+| Grafana | <http://localhost:3001> (anonymous, no login) |
 | Prometheus | <http://localhost:9090> |
 
-`make demo` **works with no LLM API key** — root-cause drafts come from the deterministic timeline
+The demo **works with no LLM API key** — root-cause drafts come from the deterministic timeline
 summariser instead of a model. Set `LLM_API_KEY` for model-written narratives.
 
 The API is behind a static key, `local-dev-key` by default:
@@ -51,8 +66,154 @@ The API is behind a static key, `local-dev-key` by default:
 curl -H 'X-Api-Key: local-dev-key' localhost:3000/api/v1/incidents
 ```
 
-Terminal equivalents of the buttons: `make seed`, `make break`, `make break-both`, `make reset`,
-`make kill`, `make watch`. Tear down with `make down`.
+Prefer a terminal? `./scripts/demo.sh seed | break | break-both | reset | kill | status` drives the
+same actions. Tear down with `docker compose down -v`.
+
+## How to run
+
+Every command below is identical on PowerShell, cmd, macOS and Linux. `make` is **not** required and
+is not used for the demo or the build — it survives only for the load-test measurement sequence and
+the kind/Helm path, which are genuinely multi-step. Run `make help` to see what is left.
+
+> **Windows:** in PowerShell, `curl` is an alias for `Invoke-WebRequest` and does **not** accept
+> `-X` or `-H`. Write `curl.exe` instead; it ships with Windows 10 and later.
+
+### Start and stop
+
+```bash
+docker compose up -d --build --wait
+```
+
+Builds the images and starts all fifteen containers: Postgres, Redpanda, Redis, Prometheus, Grafana,
+the eight-service demo fleet, the k6 baseline traffic generator and Sentinel. `--wait` blocks until
+every health check passes, so when it returns the stack is genuinely ready. Takes a few minutes cold,
+about 25 seconds warm.
+
+```bash
+docker compose down -v
+```
+
+Stops everything and drops the volumes, so the next start comes up with an empty database: no SLOs,
+no incidents, back to step 1 of the demo. Omit `-v` to keep incident history across a restart.
+
+```bash
+docker compose ps                        # what is running, and each container's health
+docker compose logs -f sentinel          # follow the platform's own logs
+```
+
+### Drive the demo from a terminal
+
+Every button on the demo page is one API call, and [`scripts/demo.sh`](scripts/demo.sh) is a thin
+wrapper over the same endpoints:
+
+```bash
+./scripts/demo.sh seed         # 16 objectives — one availability, one latency, per service
+./scripts/demo.sh break        # 35% errors and +600 ms into ledger-service
+./scripts/demo.sh break-both   # ledger-service AND catalog-service
+./scripts/demo.sh reset        # clear all injected failure
+./scripts/demo.sh kill         # halt the process mid-incident; Docker restarts it
+./scripts/demo.sh status       # fleet health and current chaos state
+```
+
+`break` targets the deepest node in the order path, which should produce **one** incident naming it
+as origin. `break-both` additionally breaks the disconnected browse path, which should produce
+**two** — the negative case that proves correlation groups by dependency rather than by timing.
+
+The script holds no SLO parameters, service list or chaos rates of its own; `DemoControlController`
+owns all of that, so the terminal path and the buttons cannot drift apart. All of `/api/v1` sits
+behind a static key, `local-dev-key` unless you set `SENTINEL_API_KEY`, so the raw calls work too:
+
+```bash
+curl -X POST -H 'X-Api-Key: local-dev-key' 'localhost:3000/api/v1/demo/seed'
+curl -X POST -H 'X-Api-Key: local-dev-key' 'localhost:3000/api/v1/demo/chaos?services=ledger-service'
+curl         -H 'X-Api-Key: local-dev-key' 'localhost:3000/api/v1/incidents'
+```
+
+`./scripts/watch-incidents.sh` narrates incidents as they open, attach and resolve.
+
+These endpoints exist only under the `demo` profile and return 404 in any other. That is deliberate:
+an endpoint that can break its own fleet, or halt the process, has no business being reachable in
+production.
+
+### Editing the demo page
+
+`static/demo.html` is compiled into the jar, so editing it normally changes nothing in a running
+container until a full Maven rebuild — the container serves the copy that was packaged.
+
+A `docker-compose.override.yml` fixes that. Compose merges it automatically on every
+`docker compose up`, with no extra flag:
+
+```yaml
+services:
+  sentinel:
+    volumes:
+      - ./sentinel-platform/src/main/resources/static:/app/static:ro
+    environment:
+      SPRING_WEB_RESOURCES_STATIC_LOCATIONS: "file:/app/static/,classpath:/META-INF/resources/,classpath:/resources/,classpath:/static/,classpath:/public/"
+      SPRING_WEB_RESOURCES_CACHE_PERIOD: "0"
+      SPRING_WEB_RESOURCES_CHAIN_CACHE: "false"
+```
+
+`file:` first shadows the packaged copy, and the two cache settings stop Spring and the browser
+serving a stale one. A browser refresh becomes the whole loop.
+
+The file is **gitignored**, so it is per-machine rather than something a reviewer inherits — paste the
+block above into `docker-compose.override.yml` at the repository root to enable it. Note that it
+shadows the jar rather than updating it: rebuild with `docker compose up -d --build sentinel` before
+recording anything, so what you record is the file the image actually contains.
+
+### Build and test
+
+These need a JDK; the Maven wrapper fetches Maven itself. On Windows use `mvnw.cmd`.
+
+```bash
+./mvnw verify                            # unit + Testcontainers integration suite
+./mvnw test                              # unit only, no Docker, seconds
+./mvnw -DskipTests package               # build without testing
+./mvnw -pl sentinel-platform verify      # JaCoCo → target/site/jacoco/index.html
+./mvnw spotless:apply                    # apply formatting — CI fails on spotless:check
+```
+
+`verify` starts real Postgres, Redpanda and Redis through Testcontainers, so it needs Docker running
+and takes a few minutes. `test` needs neither and is the one to run while working. Mutation testing
+is scoped to `slo.math` alone — line coverage proves the tests ran, mutation coverage proves they
+would have failed had the arithmetic been wrong:
+
+```bash
+./mvnw -pl sentinel-platform test-compile org.pitest:pitest-maven:mutationCoverage
+```
+
+### Load testing
+
+The load-test overlay swaps the eight-service demo fleet for the synthetic exporter, because eight
+extra JVMs competing for the same cores would measure the laptop rather than the evaluator. Full
+detail in [loadtest/README.md](loadtest/README.md).
+
+```bash
+SYNTHETIC_SERVICES=100 docker compose -f docker-compose.yml -f docker-compose.loadtest.yml \
+  up -d --build postgres redpanda redis prometheus grafana synthetic-exporter sentinel   # make load-test-up
+docker compose -f docker-compose.yml -f docker-compose.loadtest.yml down -v              # make load-test-down
+```
+
+The measurements themselves run k6 in a container and are wrapped by `make load-test-seed`,
+`load-test-storm`, `load-test-replay` and `load-test-recovery`. **Run `load-test-seed` first** —
+nothing is evaluated until SLOs exist, and skipping it measures an empty cycle. `make load-test` runs
+the full 100/250/500 ramp end to end and takes around 75 minutes.
+
+### Kubernetes
+
+The secondary path, and the one place `docker compose` genuinely cannot substitute — it needs `kind`,
+`kubectl` and `helm`. Compose remains the primary target; nothing here is required for the demo.
+
+```bash
+make kind-demo      # cluster, image side-load, and helm install, in three named steps
+make kind-status    # pods, and what each probe currently says
+make kind-drain     # delete the sentinel pod mid-stream; nothing may be lost
+make kind-down
+```
+
+`make helm-lint` renders and lints the chart without needing a cluster at all. See
+[k8s/README.md](k8s/README.md) for what this does and, honestly, what it does not demonstrate.
 
 ## Architecture
 
@@ -105,10 +266,18 @@ positive case. With two, you can break a leaf in each and check Sentinel reports
 the half of the proof that it groups what is connected rather than what merely broke at the same
 moment.
 
-| Break | Measured result |
+![The two dependency paths and per-service status](docs/images/Sentinel_2.png)
+
+<sub>Arrows point from a service to what it depends on, so failure travels **right to left** — break
+`ledger-service` and it climbs all the way to `api-gateway`. That is why one broken service produces
+a screenful of alerts, and it is the structure correlation walks.</sub>
+
+| Break | Result |
 |---|---|
-| `ledger-service` | **6 services → 1 incident**, origin `ledger-service`, 94 breaches absorbed |
+| `ledger-service` | **6 services → 1 incident**, origin `ledger-service` |
 | `ledger` + `catalog` | **2 incidents** — 6 services from `ledger-service`, 2 from `catalog-service` |
+
+Breach counts vary with how long chaos runs; the run pictured above absorbed 88 into one incident.
 
 ## How it works
 
@@ -146,6 +315,14 @@ Duplicate delivery is absorbed at three ordered layers: a deterministic event ID
 recognisable, a Redis dedupe key set **after** commit skips work already done, and a partial unique
 index on `incident` catches the commit↔mark race.
 
+![Breaking both paths produces separate incidents](docs/images/Sentinel_8.png)
+
+<sub>**The negative case, which is what makes the positive one mean anything.** Both leaves broken at
+the same instant. A system that grouped by timing would report one incident spanning everything;
+Sentinel keeps them apart because `catalog-service` and `ledger-service` share no dependency edge.
+The ribbon along the top times the pipeline from injection: first breach at +30s, incident committed
+at +30s, root cause drafted +2s later — off the detection path, so it held nothing up.</sub>
+
 ### Incident lifecycle
 
 ```
@@ -169,12 +346,53 @@ With no API key, `TemplateRcaDrafter` writes the same four sections from the sam
 deterministically. The response always says which wrote it, because a template summary and a model
 narrative deserve different amounts of trust.
 
+![Incidents, activity log, breach timeline and drafted root cause](docs/images/Sentinel_7.png)
+
+<sub>Four views of the same event, side by side, because the interesting part is how they line up in
+time: a breach lands in the timeline, an incident absorbs it, the log records when, the drafter
+explains it. The activity log is the audit trail — every state change, blast-radius widening and
+correlation decision, in order.</sub>
+
 ## Why not just Prometheus + Alertmanager?
 
 Recording rules compute burn rate; Alertmanager groups and inhibits. What they do not give you: a
 stateful incident entity with a lifecycle, dependency-aware cross-service correlation, error budget
 accounting that survives restarts, or queryable incident history for postmortems. That is the layer
 PagerDuty and incident.io sell. This is a minimal open version of it.
+
+## Dashboards
+
+Two Grafana dashboards are provisioned as JSON, so they exist on first boot with zero clicking.
+Anonymous access is enabled — there is no login step.
+
+**Sentinel Internals** — Sentinel watching itself. This is the operations view.
+
+![Sentinel Internals dashboard](docs/images/Grafana_Sentinel_Internal.png)
+
+<sub>`Cycle p99 vs 15s interval` is the ceiling metric: at 100% the evaluator can no longer keep up.
+The steps in the p95/p99 trace are chaos injections — cycle cost rises from ~60 ms to ~220 ms while
+sixteen objectives are actually breaching, still **0.332% of the interval budget**. Vertical dashed
+lines are annotations marking incidents opened and process restarts.</sub>
+
+**Fleet SLO** — the product view: burn rate per service against the 1× / 6× / 14.4× threshold lines,
+error budget gauges, and request rate. Template variables switch the objective and both windows.
+
+![Fleet SLO dashboard](docs/images/Grafana_FleetSLO.png)
+
+<sub>Check **Request rate** first. If it is flat at zero the baseline load generator has stopped,
+`rate()` has nothing to average, and every burn rate here is meaningless rather than healthy. The
+30-day error-budget gauges read 0% until the stack has 30 days of history — expected on a fresh
+start, not a fault.</sub>
+
+Prometheus itself is a query console, not a dashboard — it opens blank on purpose. Every link out of
+the demo console carries its expression in the URL, so it lands on a drawn graph:
+
+![Prometheus, opened on a pre-filled burn-rate query](docs/images/Prometheus.png)
+
+<sub>The **Look At The Raw Data** tab on the demo console lists eight of these with the query and an
+explanation of what it answers. The pair worth running back to back is
+`slo:error_ratio:2m` and the raw `rate(...)` expression that computes the same thing at query time —
+identical lines, one precomputed. That is the whole recording-rules argument in ten seconds.</sub>
 
 ## API
 
@@ -208,16 +426,16 @@ Every fleet instance also exposes chaos injection on its own port — `api-gatew
 ```bash
 curl -X POST 'localhost:8086/chaos/errors?rate=0.3'   # ledger-service: 30% of requests return 500
 curl -X POST 'localhost:8086/chaos/latency?ms=600'
-./scripts/reset-chaos.sh                              # reset the whole fleet
+./scripts/demo.sh reset                               # reset the whole fleet
 ```
 
 ## Testing
 
 ```bash
-make test-unit     # unit tests, no Docker, ~15s
-make test          # + Testcontainers suite (real Postgres, Redpanda, Redis)
-make mutation      # PIT on slo.math, threshold 85%
-make coverage      # JaCoCo, gate at line ≥75% / branch ≥65%
+./mvnw test                          # unit tests, no Docker, ~15s
+./mvnw verify                        # + Testcontainers suite (real Postgres, Redpanda, Redis)
+./mvnw -pl sentinel-platform test-compile org.pitest:pitest-maven:mutationCoverage
+./mvnw -pl sentinel-platform verify  # JaCoCo, gate at line ≥75% / branch ≥65%
 ```
 
 Real containers, because mocked brokers hide serialization and rebalance bugs. The suite is weighted
@@ -306,7 +524,7 @@ Stated deliberately rather than discovered later.
   out — roughly an hour on the production 1h window.
 - **Single tenant, single evaluator instance.** Sharding is built and rendered by the Helm chart but
   has not been run under load.
-- **`make demo` uses compressed SLO windows** so a cascade is visible in two minutes. Production
+- **The demo profile uses compressed SLO windows** so a cascade is visible in two minutes. Production
   defaults are the standard 1h/6h/3d.
 - **The RCA is a hypothesis.** The model sees the incident, the induced edges and the timeline — no
   logs, no deploys, no config history.

@@ -34,8 +34,8 @@ results contradicted it.
 
 ## Back of the envelope
 
-The load per evaluation cycle is smaller than it looks, and the reason is §5.3: **burn rate is
-precomputed in Prometheus recording rules, not in the evaluator.**
+The load per evaluation cycle is smaller than it looks, and the reason is the recording rules:
+**burn rate is precomputed in Prometheus, not in the evaluator.**
 
 A naive implementation queries Prometheus once per SLO per window. At 100 services × 2 SLOs × 2
 windows that is 400 queries every 15 seconds, and at 1000 services it is 4000 — enough that

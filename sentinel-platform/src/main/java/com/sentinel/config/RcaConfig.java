@@ -20,7 +20,7 @@ import org.springframework.util.StreamUtils;
 /**
  * Wires the RCA seam, and decides whether a model is involved at all.
  *
- * <p>{@code make demo} must work with no API key — a reviewer will not sign up for Groq to try the
+ * <p>{@code docker compose up} must work with no API key — a reviewer will not sign up for Groq to try the
  * project. That constraint drives the shape of this class.
  */
 @Configuration

@@ -2,12 +2,13 @@
 <!--
   Demo visualiser — NOT a product UI.
 
-  CLAUDE.md rules out a frontend and that rule stands: Grafana is the product surface. This page
-  stays inside its spirit — one static file, no framework, no npm, no build step, no new module.
+  This project deliberately has no frontend: Grafana is the product surface. This page stays inside
+  that constraint — one static file, no framework, no npm, no build step, no new module.
 
   It is organised around one idea: at any moment there is exactly ONE thing worth looking at. The
   page tracks which stage the demo is in and says, in plain words, what is happening and why. Detail
-  lives behind tabs so it is available without competing for attention.
+  lives in the live grid and the collapsed reference section, available without competing for
+  attention.
 -->
 <html lang="en">
 <head>
@@ -15,7 +16,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Rewritten by tick() to carry the open incident count, the way a monitoring tool should: the
      tab is often the only part of this page visible while you are talking over something else. -->
-<title>Sentinel — SLO &amp; Incident Intelligence</title>
+<title>Sentinel · SLO &amp; Incident Intelligence</title>
 <!-- The wordmark's shield-and-pulse, as a data URI: no request, no binary in the repo, and it
      stays in sync with the header because there is only one place to change it. Stroke widths are
      heavier than the header copy — the detail that reads at 32px turns to mud at 16. -->
@@ -25,11 +26,16 @@
     Colour carries meaning here, and only one meaning each. Before this the accent blue was doing
     five jobs at once — active step, hero number, MEDIUM severity, links, tab underline — which
     means it signalled nothing. Now:
-      red    = breaching, right now
-      purple = the inferred origin, and nothing else
+      red    = failing, right now
+      purple = the root cause, and nothing else
       green  = healthy or resolved
       amber  = degraded, waiting, or a caveat
-      blue   = things you can click. Never a state.
+      blue   = things you can click, and structural chrome. Never a health state.
+
+    The words attached to those colours live in one place, the STATUS table in the script:
+    Healthy / Degraded / Failing / Root cause / Down. Plain operational English on purpose — the
+    SLO vocabulary (on target, breaching, inferred origin) is precise and means nothing to anyone
+    who has not already read the SRE workbook, which is exactly the reader this page is for.
   */
   :root {
     --bg:#0d1117; --panel:#161b22; --raised:#1c222b; --line:#2a313c;
@@ -106,9 +112,18 @@
 
      Every size here is in em rather than px, so the header tracks --base and stays in proportion
      with the page rather than being pinned to a fixed pixel size of its own. */
-  header { border-bottom:1px solid var(--line); background:var(--panel); margin-bottom:26px; }
+  /* z-index on the header, not on the tooltips. A hover lift is a `transform`, and a transform
+     creates a stacking context — so the tooltip's own z-index:60 was being resolved *inside* the
+     button that hosts it, and that whole context still painted below content later in the
+     document. No amount of raising the tooltip fixes it; the ancestor has to win. */
+  header { position:relative; z-index:30; border-bottom:1px solid var(--line); background:var(--panel); margin-bottom:26px; }
 
+  /* The two rows are given an explicit stacking order. Raising the header alone was not enough:
+     a hovered control lifts with `transform`, which makes it its own stacking context, and the
+     tooltip's z-index is then resolved *inside* that context rather than against the row below.
+     Ordering the rows themselves settles it once, for every tooltip either row will ever hold. */
   .tier1 {
+    position:relative; z-index:2;
     display:flex; align-items:center; justify-content:space-between; gap:16px;
     padding:13px 0 12px; flex-wrap:wrap;
   }
@@ -180,6 +195,7 @@
   /* Tier 2 is only the outbound links now, so it centres. Nothing is competing with them for the
      row and a left-aligned group under a full-width brand reads as leftover space. */
   .tier2 {
+    position:relative; z-index:1;
     display:flex; align-items:center; justify-content:center; gap:14px;
     padding:9px 0 10px; border-top:1px solid var(--line); flex-wrap:wrap;
   }
@@ -269,6 +285,10 @@
     opacity:0; pointer-events:none;
     transition:opacity .16s .3s, transform .16s .3s;
   }
+  /* The host rises with its tooltip. Within a single row the neighbour to the right is painted
+     later and would otherwise cover it, so raising only the tooltip is not enough — whatever
+     stacking context it lands in has to outrank its own siblings too. */
+  [data-tip]:hover, [data-tip]:focus-visible { z-index:70; }
   [data-tip]:hover::before, [data-tip]:focus-visible::before {
     opacity:1; transform:translateX(-50%) translateY(0);
   }
@@ -285,45 +305,333 @@
   @media (prefers-reduced-motion: reduce) { [data-tip]::before { transition:opacity .16s .3s; } }
 
   /* ---- step rail ---- */
-  .rail { display:flex; gap:0; margin-bottom:22px; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  .step { flex:1; padding:11px 14px; background:var(--panel); border-right:1px solid var(--line); transition:.25s; }
-  .step:last-child { border-right:0; }
-  .step .num { font-size:10.5px; letter-spacing:1.2px; text-transform:uppercase; color:var(--faint); font-weight:600; }
-  .step .name { font-size:13.5px; margin-top:1px; color:var(--dim); }
+  /* ---- step rail ----
+     Also the primary control. It was a read-only progress bar sitting directly above four buttons
+     that did the same things, so the most obvious thing on the page to press did nothing at all.
+     Each step now runs its own action, delegating to the button that already owns the request and
+     its error handling — two controls, one code path.
+
+     Step 3 is the exception and says so. Nothing drives correlation but the evaluator noticing,
+     and a button claiming to do it would be theatre. */
+  /* The rail is the deck's header now: same row, no border or card of its own. */
+  .rail {
+    display:flex; margin:0; background:transparent;
+    border:0; border-bottom:1px solid var(--line); border-radius:0;
+  }
+  /* The step is a container, not a button: it holds the action AND an info button, and a button
+     may not be nested inside a button. */
+  .step {
+    flex:1; min-width:0; position:relative;
+    border-right:1px solid var(--line);
+    transition:background .2s, opacity .2s;
+  }
+  .step-go {
+    position:relative; display:block; width:100%; text-align:left;
+    font:inherit; color:inherit; background:transparent; border:0;
+    padding:12px 40px 13px 16px; border-radius:inherit;
+  }
+  /* Only the top corners, and only enough that a highlighted end step does not square off against
+     the panel's rounding. */
+  .step:first-child { border-radius:8px 0 0 0; }
+  .step:last-child { border-right:0; border-radius:0 8px 0 0; }
+  /* ::after, not ::before — [data-tip] already owns ::before on every one of these. */
+  .step::after {
+    content:""; position:absolute; left:0; right:0; top:0; height:2px;
+    background:transparent; transition:background .2s;
+  }
+  .step .num {
+    display:flex; align-items:center; gap:5px;
+    font-size:10.5px; letter-spacing:1.2px; text-transform:uppercase;
+    color:var(--faint); font-weight:600;
+  }
+  .step .name { display:block; font-size:13.5px; margin-top:2px; color:var(--dim); }
+  .step .tick { display:none; color:var(--ok); }
+  .step .press {
+    position:absolute; right:14px; bottom:12px;
+    font-size:13px; color:var(--faint); opacity:0; transition:opacity .2s, color .2s;
+  }
+
+  /* ---- info, on a press rather than on hover ----
+     Hovering a step to read about it and hovering it to press it are the same gesture, so the
+     panel opened whenever you went anywhere near the control. This content is reference detail
+     rather than a label — it needs to stay put while it is read, which means an explicit toggle. */
+  .step-i {
+    position:absolute; right:10px; top:10px; z-index:2;
+    display:flex; align-items:center; justify-content:center;
+    width:19px; height:19px; padding:0; border-radius:50%; cursor:pointer;
+    font:700 11px/1 var(--sans); font-style:italic;
+    color:var(--faint); background:transparent; border:1px solid var(--line);
+    transition:color .15s, border-color .15s, background .15s;
+  }
+  .step-i:hover, .step-i[aria-expanded="true"] {
+    color:var(--accent); border-color:var(--accent);
+    background:color-mix(in srgb,var(--accent) 14%,transparent);
+  }
+  .step-pop {
+    position:absolute; top:calc(100% - 5px); left:12px; z-index:90;
+    width:335px; max-width:calc(100vw - 48px);
+    background:var(--raised); border:1px solid var(--line); border-radius:10px;
+    padding:13px 15px 14px; box-shadow:0 14px 38px rgba(0,0,0,.46);
+    font-size:12.5px; line-height:1.58; color:var(--dim); text-align:left;
+  }
+  /* The right-hand steps would open off the page edge. */
+  .step:nth-last-child(-n+2) .step-pop { left:auto; right:12px; }
+  .step-pop h4 {
+    margin:0 0 8px; font-size:10px; letter-spacing:1.1px; text-transform:uppercase;
+    color:var(--faint); font-weight:700;
+  }
+  .step-pop ul { margin:0; padding-left:15px; }
+  .step-pop li { margin-bottom:7px; }
+  .step-pop li:last-child { margin-bottom:0; }
+  .step-pop b { color:var(--text); font-weight:600; }
+
+  .step.done .num { color:var(--ok); }
+  .step.done .tick { display:inline; }
+  .step.done::after { background:color-mix(in srgb,var(--ok) 55%,transparent); }
   .step.on { background:var(--raised); }
   .step.on .num { color:var(--accent); }
   .step.on .name { color:var(--text); font-weight:600; }
-  .step.done .num { color:var(--ok); }
+  .step.on::after { background:var(--accent); }
+
+  /* Only the steps that actually do something take the affordance. Step 3's cell is a div and
+     never picks any of this up, so it cannot look pressable while being inert. */
+  button.step-go { cursor:pointer; }
+  button.step-go:hover:not(:disabled) { background:var(--raised); }
+  button.step-go:hover:not(:disabled) .name { color:var(--text); }
+  button.step-go:hover:not(:disabled) .press { opacity:1; color:var(--accent); }
+  button.step-go:disabled { cursor:not-allowed; opacity:.42; }
+  /* No `suggest` styling on the rail. It used to mark the next available action, which painted an
+     accent bar and bolded the name on a step you had not reached yet, so two steps read as active
+     at once. The Next step button carries that signal now, and exactly one step is highlighted. */
 
   /* ---- narrator: the single most important element on the page ---- */
-  .narrator { border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:10px;
-              background:var(--panel); padding:18px 20px; margin-bottom:16px; }
-  .narrator.crit { border-left-color:var(--crit); }
-  .narrator.ok { border-left-color:var(--ok); }
-  .narrator.warn { border-left-color:var(--warn); }
-  .narrator h2 { font-size:19px; margin:0 0 7px; font-weight:650; letter-spacing:-.3px; }
-  .narrator .now { font-size:14.5px; margin:0 0 11px; }
-  .narrator .why { font-size:13.5px; color:var(--dim); margin:0; padding-top:11px; border-top:1px solid var(--line); }
-  .narrator .why b { color:var(--text); font-weight:600; }
+  /* ---- the deck ----
+     One object, read straight down: where you are, what is happening, what to press. These were
+     three separate blocks, and the two of them that were controls sat at opposite ends with a
+     paragraph in between — so "what do I do next" had two answers in two different places and the
+     eye had to bounce between them to assemble the flow.
+
+     The tone stripe moves to the whole panel. It was on the narrator alone, which meant the state
+     of the demo coloured the prose but not the buttons that change it. */
+  .deck {
+    /* Same reason as the header: the step popovers open downward over the ribbon and hero, and
+       without a stacking context that outranks them they would open behind. */
+    position:relative; z-index:20;
+    border:1px solid var(--line); border-left:4px solid var(--accent);
+    border-radius:12px; background:var(--panel); margin-bottom:16px;
+    /* No overflow:hidden — the steps inside carry tooltips. Corners are handled per child. */
+  }
+  .deck.crit { border-left-color:var(--crit); }
+  .deck.ok { border-left-color:var(--ok); }
+  .deck.warn { border-left-color:var(--warn); }
+
+  .narrator { padding:17px 20px 16px; }
+
+  /* ---- readiness ----
+     This replaced a 90-second countdown that consulted nothing. A timer could only ever assert
+     that the start-up errors had gone; this shows each service's actual error rate over the burn
+     window and lets you watch them fall. It is also the gate, so the screen and the disabled
+     buttons cannot disagree: when the last row goes green, Break unlocks. */
+  .ready { margin:14px 0 0; }
+  .ready-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:11px; }
+  .ready-count {
+    font-family:var(--mono); font-size:21px; font-weight:700; line-height:1;
+    color:var(--warn); font-variant-numeric:tabular-nums;
+  }
+  .ready.done .ready-count { color:var(--ok); }
+  .ready-label { font-size:12.5px; color:var(--dim); }
+  /* ---- reading order, in colour ----
+     Three things were all the same grey, so nothing told you where to start. Now each rung of the
+     hierarchy looks different from the one below it:
+
+       h2   state, in the state's own colour
+       .now the fact, in full-strength text
+       .why the reasoning, set apart in its own panel
+
+     The heading takes its colour from the deck's tone rather than a colour of its own, so it can
+     never disagree with the stripe beside it. Blue stays reserved for things you can click. */
+  .narrator h2 { font-size:19px; margin:0 0 8px; font-weight:700; letter-spacing:-.3px; color:var(--text); }
+  .deck.crit .narrator h2 { color:var(--crit); }
+  .deck.warn .narrator h2 { color:var(--warn); }
+  .deck.ok   .narrator h2 { color:var(--ok); }
+
+  .narrator .now { font-size:14.5px; margin:0; color:var(--text); }
+
+  /* The WHY was grey prose under a grey rule, sitting among more grey prose. Boxing it separates
+     the reasoning from the fact above it without spending another colour on it. */
+  .narrator .why {
+    font-size:13px; line-height:1.62; color:var(--dim);
+    margin:14px 0 0; padding:11px 14px 12px;
+    background:color-mix(in srgb,var(--raised) 75%,var(--panel));
+    border:1px solid var(--line); border-left:3px solid var(--line);
+    border-radius:9px;
+  }
+  .deck.crit .narrator .why { border-left-color:color-mix(in srgb,var(--crit) 55%,var(--line)); }
+  .deck.warn .narrator .why { border-left-color:color-mix(in srgb,var(--warn) 55%,var(--line)); }
+  .deck.ok   .narrator .why { border-left-color:color-mix(in srgb,var(--ok) 55%,var(--line)); }
+  .narrator .why b { color:var(--text); font-weight:650; }
+  .narrator .why em { color:var(--text); font-style:italic; }
   .why-label {
     display:inline-block; font-size:10px; letter-spacing:1.2px; text-transform:uppercase;
     color:var(--faint); font-weight:700; margin-right:8px;
   }
+  .deck.crit .why-label { color:color-mix(in srgb,var(--crit) 75%,var(--dim)); }
+  .deck.warn .why-label { color:color-mix(in srgb,var(--warn) 75%,var(--dim)); }
+  .deck.ok   .why-label { color:color-mix(in srgb,var(--ok) 75%,var(--dim)); }
 
   /* ---- actions ---- */
-  .actions { display:flex; gap:9px; align-items:center; flex-wrap:wrap; margin-bottom:22px; }
-  .btn {
-    font:inherit; font-size:13.5px; font-weight:550; padding:9px 17px; border-radius:7px;
-    cursor:pointer; border:1px solid var(--line); background:var(--panel); color:var(--text); transition:.15s;
+  /* The deck's footer. Tinted a shade off the body so the row of things you can press reads as a
+     distinct band rather than as more prose. */
+  /* The status message sits on its own line beneath the buttons, not in among them. Sharing the
+     row meant that the moment an action reported back, a sentence of unpredictable length joined
+     the flex line and pushed Reset onto a second row — so the control moved out from under the
+     cursor that had just pressed it. The row now holds only controls, and its geometry no longer
+     depends on how much there is to say. */
+  .actions {
+    margin:0; padding:13px 20px 14px; border-top:1px solid var(--line);
+    background:color-mix(in srgb,var(--raised) 60%,var(--panel));
+    border-radius:0 0 11px 11px;
   }
-  .btn:hover:not(:disabled) { border-color:var(--accent); }
-  .btn:disabled { opacity:.35; cursor:not-allowed; }
-  .btn.go { background:var(--accent); border-color:var(--accent); color:#fff; }
-  .btn.go:hover:not(:disabled) { filter:brightness(1.1); }
-  .btn.bad { border-color:var(--crit); color:var(--crit); }
-  .btn.bad:hover:not(:disabled) { background:color-mix(in srgb,var(--crit) 12%,transparent); }
-  .btn.ghost { font-size:12.5px; padding:5px 11px; color:var(--dim); background:transparent; }
-  .btn.ghost:hover:not(:disabled) { color:var(--accent); border-color:var(--accent); }
+  .actrow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .actmsg { margin:10px 0 0; font-size:12.5px; line-height:1.5; color:var(--faint); }
+  /* No message, no line. Keeps the footer from reserving space for something that is not there. */
+  .actmsg:empty { display:none; }
+
+  /* ---- next action ----
+     Deliberately louder than .actmsg beneath it. That line reports what the last press did; this
+     one says what to press now, and of the two only one is ever an instruction. */
+  .nextup {
+    display:flex; align-items:flex-start; gap:9px; margin:13px 0 0; padding:9px 12px;
+    font-size:12.5px; line-height:1.55; color:var(--text);
+    background:color-mix(in srgb,var(--accent) 9%,transparent);
+    border:1px solid color-mix(in srgb,var(--accent) 26%,transparent);
+    border-left:2.5px solid var(--accent); border-radius:0 7px 7px 0;
+  }
+  .nextup .nk {
+    flex:none; font-size:9.5px; letter-spacing:.9px; font-weight:700; text-transform:uppercase;
+    color:var(--accent); padding-top:3px;
+  }
+  .nextup b { color:var(--text); font-weight:650; }
+  /* Waiting on the clock rather than on you: same line, no call to action, so it never nags for a
+     press that does not exist. */
+  .nextup.wait {
+    background:color-mix(in srgb,var(--warn) 8%,transparent);
+    border-color:color-mix(in srgb,var(--warn) 24%,transparent);
+    border-left-color:var(--warn); color:var(--dim);
+  }
+  .nextup.wait .nk { color:var(--warn); }
+  .nextup.calm {
+    background:transparent; border-color:var(--line); border-left-color:var(--line); color:var(--dim);
+  }
+  .nextup.calm .nk { color:var(--faint); }
+  /* Kill is not part of the happy path — it is the durability beat, and it belongs after a break
+     rather than in line with the actions that drive the story forward. */
+  .actions .divider { width:1px; height:24px; background:var(--line); flex:none; margin:0 3px; }
+  .actions .spacer { flex:1; min-width:12px; }
+  .deck .err { margin:14px 20px 0; }
+  .btn {
+    display:inline-flex; align-items:center; gap:8px;
+    font:inherit; font-size:13.5px; font-weight:600; padding:9px 16px; border-radius:9px;
+    cursor:pointer; color:var(--text);
+    background:linear-gradient(180deg,var(--raised),var(--panel));
+    border:1px solid color-mix(in srgb,var(--accent) 26%,var(--line));
+    box-shadow:0 1px 2px rgba(0,0,0,.2), inset 0 1px 0 rgba(255,255,255,.045);
+    transition:transform .14s, box-shadow .14s, border-color .14s, background .14s, color .14s;
+  }
+  /* Icons never swallow the click. The handlers read e.currentTarget so this is belt-and-braces,
+     but it also keeps :hover and the tooltip anchored to the button rather than to a child. */
+  .btn .bico, .ctl .ico, .links a .lico { pointer-events:none; }
+  .btn .bico { width:1em; height:1em; flex:none; }
+  .btn:hover:not(:disabled) {
+    border-color:var(--accent); transform:translateY(-1px);
+    box-shadow:0 4px 12px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.07);
+  }
+  .btn:active:not(:disabled) { transform:translateY(0); box-shadow:inset 0 2px 5px rgba(0,0,0,.25); }
+  /* Disabled without `opacity`, because opacity does two things that wreck the tooltip on a
+     disabled control, and a disabled control is exactly when you most want to read one:
+
+       1. It applies to the whole subtree, ::before included, so the tooltip rendered at 38%
+          and the page showed straight through it.
+       2. It creates a stacking context, so the tooltip's z-index was resolved *inside* the
+          button and could not rise above anything painted after it.
+
+     Muted colours produce the same "not available" reading and do neither. The variant rules
+     below need the extra class because .btn.primary / .btn.danger repaint the background at
+     equal specificity and would otherwise win on source order. */
+  .btn:disabled {
+    cursor:not-allowed; box-shadow:none; transform:none;
+    color:var(--faint); border-color:var(--line); background:var(--panel);
+  }
+  /* The pressed button, mid-request. It is disabled like all the others, but it is the only one
+     saying anything, so it keeps the accent and gets a spinner: "this is what is running" has to
+     be distinguishable from "this is unavailable" at a glance. */
+  .btn.running:disabled {
+    cursor:progress; color:var(--accent);
+    border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
+    background:color-mix(in srgb,var(--accent) 10%,var(--panel));
+  }
+  .spin {
+    flex:none; width:11px; height:11px; border-radius:50%;
+    border:1.6px solid color-mix(in srgb,currentColor 28%,transparent);
+    border-top-color:currentColor; animation:spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation:none; opacity:.7; } }
+
+  /* Primary — the one action that starts everything. */
+  .btn.primary {
+    background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 90%,#fff),var(--accent));
+    border-color:var(--accent); color:#fff;
+  }
+  .btn.primary:hover:not(:disabled) { filter:brightness(1.08); border-color:var(--accent); }
+  .btn.primary:disabled {
+    background:color-mix(in srgb,var(--accent) 28%,var(--panel));
+    border-color:color-mix(in srgb,var(--accent) 34%,var(--line));
+    color:color-mix(in srgb,#fff 45%,var(--faint));
+  }
+  /* Finished, not blocked. The default disabled treatment makes a step you have completed and a
+     step you are not allowed to take look identical, and only one of those is a problem. Green
+     because that is already the page's colour for "resolved". */
+  .btn.primary.done:disabled {
+    background:color-mix(in srgb,var(--ok) 12%,var(--panel));
+    border-color:color-mix(in srgb,var(--ok) 40%,var(--line));
+    color:var(--ok);
+  }
+
+  /* Destructive — red IS the identity of these, so nothing may overwrite their colour.
+     The old pairing did exactly that: .go painted the background accent and set white text, then
+     .bad set red text from a later rule at equal specificity and won. The result was a blue
+     button with red text — unreadable, and it only appeared once a button became the suggested
+     action, which is the moment it most needed to be legible. Emphasis is a ring now (.suggest),
+     never a repaint, so it composes with primary and danger instead of fighting them. */
+  .btn.danger {
+    color:var(--crit); border-color:color-mix(in srgb,var(--crit) 52%,var(--line));
+    background:linear-gradient(180deg,color-mix(in srgb,var(--crit) 11%,var(--raised)),var(--panel));
+  }
+  .btn.danger:hover:not(:disabled) {
+    color:var(--crit); border-color:var(--crit);
+    background:color-mix(in srgb,var(--crit) 17%,var(--panel));
+  }
+  .btn.danger:disabled {
+    color:color-mix(in srgb,var(--crit) 40%,var(--faint));
+    border-color:color-mix(in srgb,var(--crit) 16%,var(--line));
+    background:var(--panel);
+  }
+
+  .btn.suggest { box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 26%,transparent); }
+  .btn.suggest:hover:not(:disabled) {
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 34%,transparent), 0 4px 12px rgba(0,0,0,.28);
+  }
+  .btn.danger.suggest { box-shadow:0 0 0 3px color-mix(in srgb,var(--crit) 26%,transparent); }
+  .btn.danger.suggest:hover:not(:disabled) {
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--crit) 34%,transparent), 0 4px 12px rgba(0,0,0,.28);
+  }
+
+  .btn.ghost {
+    font-size:12.5px; font-weight:500; padding:5px 11px; color:var(--dim);
+    background:transparent; border-color:var(--line); box-shadow:none;
+  }
+  .btn.ghost:hover:not(:disabled) { color:var(--accent); border-color:var(--accent); box-shadow:none; }
   .btn.ghost.on { color:var(--accent); border-color:var(--accent); }
   .hint { font-size:12.5px; color:var(--faint); }
   .err {
@@ -336,18 +644,49 @@
      Detection latency is the question everyone asks, and it was previously only answerable by
      opening Grafana. Four marks on one line answers it at a glance, and makes the asynchronous
      RCA hop visible as a gap rather than as an architectural claim. */
+  /* No overflow:hidden. It was clipping every tooltip a mark tried to show — the panel is only
+     ~70px tall and the tooltip opens below the marker, so all that ever appeared was the top
+     couple of pixels. The rounded corners it was there for are handled by rounding the end marks
+     instead, which costs nothing and does not swallow their children. */
+  .ribcap { font-size:11.5px; color:var(--faint); line-height:1.5; margin-bottom:9px; }
+  .ribcap b { color:var(--dim); }
+  .ribcap.on { color:var(--dim); }
   .ribbon {
     display:flex; gap:0; margin-bottom:16px; border:1px solid var(--line);
-    border-radius:10px; overflow:hidden; background:var(--panel);
+    border-radius:10px; background:var(--panel);
   }
-  .mark { flex:1; padding:10px 14px; border-right:1px solid var(--line); }
+  /* A 2px rail along the top, lit only once the mark has actually happened, so the four stages
+     read as a progress bar — which is what they are. It is a border rather than an absolutely
+     positioned bar precisely so it follows the corner radius on the end marks and needs no
+     clipping to stay inside the panel. */
+  .mark {
+    flex:1; min-width:150px; padding:9px 14px 12px; position:relative;
+    border-right:1px solid var(--line); border-top:2px solid color-mix(in srgb,var(--line) 60%,transparent);
+  }
   .mark:last-child { border-right:0; }
-  .mark .k { font-size:10px; letter-spacing:1.1px; text-transform:uppercase; color:var(--faint); font-weight:700; }
-  .mark .t { font-family:var(--mono); font-size:19px; font-weight:700; margin-top:2px; color:var(--faint); letter-spacing:-.5px; }
+  .mark:first-child { border-top-left-radius:9px; }
+  .mark:last-child { border-top-right-radius:9px; }
+  .mark.hit.crit { border-top-color:var(--crit); }
+  .mark.hit.ok { border-top-color:var(--ok); }
+  .mark .k {
+    display:flex; align-items:center; gap:7px;
+    font-size:10px; letter-spacing:1.1px; text-transform:uppercase; color:var(--faint); font-weight:700;
+  }
+  .mark .mnum {
+    flex:none; width:15px; height:15px; border-radius:50%; display:inline-flex;
+    align-items:center; justify-content:center; font-size:9px; letter-spacing:0;
+    border:1px solid var(--line); color:var(--faint); background:var(--bg);
+  }
+  .mark.hit.crit .mnum { border-color:var(--crit); color:var(--crit); background:color-mix(in srgb,var(--crit) 14%,transparent); }
+  .mark.hit.ok .mnum { border-color:var(--ok); color:var(--ok); background:color-mix(in srgb,var(--ok) 14%,transparent); }
+  .mark .t {
+    font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:22px; font-weight:700;
+    margin-top:6px; color:var(--faint); letter-spacing:-.5px; line-height:1;
+  }
   .mark.hit .t { color:var(--text); }
   .mark.hit.crit .t { color:var(--crit); }
   .mark.hit.ok .t { color:var(--ok); }
-  .mark .s { font-size:11px; color:var(--faint); margin-top:1px; }
+  .mark .s { font-size:11px; color:var(--faint); margin-top:5px; line-height:1.4; }
 
   /* ---- the money number ----
      Was one of three equal cards, which made the headline result of the whole project look like a
@@ -358,10 +697,12 @@
     padding:18px 20px; margin-bottom:16px;
     display:grid; grid-template-columns:auto 1fr; gap:22px; align-items:center;
   }
-  .hero .big { font-family:var(--mono); font-size:52px; font-weight:800; line-height:1;
-               letter-spacing:-2.5px; color:var(--crit); }
-  .hero .biglabel { font-size:12.5px; font-weight:650; margin-top:6px; }
-  .hero .bighint { font-size:11.5px; color:var(--faint); margin-top:2px; max-width:210px; line-height:1.45; }
+  .hero .big { font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:52px;
+               font-weight:800; line-height:1; letter-spacing:-2.5px; color:var(--crit); }
+  /* An em dash at 52px in crit red reads as an error, not as "no result yet". */
+  .hero.idle .big { color:var(--faint); }
+  .hero .biglabel { display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:650; margin-top:8px; }
+  .hero .bighint { font-size:11.5px; color:var(--faint); margin-top:3px; max-width:215px; line-height:1.45; }
   .collapse { display:grid; grid-template-columns:1fr auto 1fr; gap:16px; align-items:center; }
   .colside .h { font-size:10.5px; letter-spacing:1.1px; text-transform:uppercase;
                 color:var(--faint); font-weight:700; margin-bottom:7px; }
@@ -372,13 +713,91 @@
   .oneinc { border:1px solid var(--crit); border-radius:8px; padding:11px 13px;
             background:color-mix(in srgb,var(--crit) 10%,transparent); font-size:13px; }
   .oneinc b { font-family:var(--mono); color:var(--origin); }
+  .oneinc + .oneinc { margin-top:7px; }
+  /* The count each column is claiming, stated rather than left to be counted off the list. */
+  .colfoot { margin-top:9px; font-size:11px; color:var(--faint); }
+  .colfoot:empty { display:none; }
 
-  /* ---- headline numbers ---- */
-  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin-bottom:22px; }
-  .stat { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:15px 17px; }
-  .stat .n { font-family:var(--mono); font-size:31px; font-weight:700; line-height:1.05; letter-spacing:-1px; }
-  .stat .l { font-size:12.5px; font-weight:600; margin-top:5px; }
-  .stat .h { font-size:11.5px; color:var(--faint); margin-top:2px; line-height:1.45; }
+  /* The forward-looking note on a fallback draft. Blue: it is an option, not a warning — the
+     fallback is the designed path, and this says what upgrading it would involve. */
+  .aiNote {
+    margin-top:14px; padding:11px 13px; font-size:12px; line-height:1.6; color:var(--dim);
+    background:color-mix(in srgb,var(--accent) 8%,transparent);
+    border:1px solid color-mix(in srgb,var(--accent) 26%,transparent);
+    border-left:2.5px solid var(--accent); border-radius:0 8px 8px 0;
+  }
+  .aiNote b { color:var(--text); }
+  .aiNote code {
+    font-family:var(--mono); font-size:11px; color:var(--accent);
+    background:color-mix(in srgb,var(--accent) 12%,transparent); padding:1px 5px; border-radius:4px;
+  }
+  /* A resolved incident shown for reference, not a live one. Same content, green and quiet. */
+  .oneinc.past { border-color:color-mix(in srgb,var(--ok) 45%,var(--line));
+                 background:color-mix(in srgb,var(--ok) 7%,transparent); }
+  .hwhen {
+    margin-left:8px; font-size:9.5px; letter-spacing:.7px; font-weight:700; text-transform:uppercase;
+    color:var(--faint); border:1px solid var(--line); border-radius:20px; padding:2px 7px;
+  }
+  .hwhen.on { color:var(--crit); border-color:color-mix(in srgb,var(--crit) 40%,var(--line)); }
+  .hwhen:empty { display:none; }
+
+  /* ---- headline numbers ----
+     Three identical grey boxes gave three unrelated quantities the same weight and the same
+     colour, so nothing said which was a count of alerts, which was a count of pages, and which was
+     a latency. Each now carries the colour its subject already owns elsewhere on the page — red for
+     raw breaches, purple for the incident that absorbed them, blue for a figure about Sentinel
+     rather than about the fleet — and a zero reads as "not yet" rather than as a live result. */
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:12px; margin-bottom:22px; }
+  /* Same story as .mark: the accent is a border, not an absolute bar, so the card needs no
+     overflow:hidden — which was clipping the tooltip to the card's own edges and showing perhaps
+     two lines of it. */
+  .stat {
+    position:relative; background:var(--panel); border:1px solid var(--line);
+    border-top:2px solid var(--line); border-radius:10px; padding:14px 17px 15px;
+  }
+  .stat.k-breach { border-top-color:var(--crit); }
+  .stat.k-inc    { border-top-color:var(--origin); }
+  .stat.k-self   { border-top-color:var(--accent); }
+  .stat .n {
+    font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:31px; font-weight:700;
+    line-height:1.05; letter-spacing:-1px; color:var(--text);
+  }
+  /* Dimmed until there is something to report, so an idle stack does not look like a measured
+     result of zero. */
+  .stat.idle .n { color:var(--faint); }
+  .stat .u { font-size:14px; font-weight:600; letter-spacing:0; color:var(--faint); margin-left:3px; }
+  .stat .l { display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600; margin-top:6px; }
+  .stat .h { font-size:11.5px; color:var(--faint); margin-top:3px; line-height:1.45; }
+
+  /* ---- the little i ----
+     One affordance for "what is this number", used on every mark and every stat. Deliberately a
+     marker rather than a whole-card hover: a tooltip that fires from anywhere on a card goes off
+     while you are reading the card, and this page already has enough moving parts.
+
+     It sits inline, immediately after the label it explains. Floated into the card's top-right
+     corner it read as decoration on the card rather than as a question about the number, and on
+     the marks it collided with the timing value. */
+  .info {
+    flex:none; width:15px; height:15px; border-radius:50%; cursor:help;
+    display:inline-flex; align-items:center; justify-content:center;
+    font-size:9.5px; font-weight:700; font-style:italic; line-height:1;
+    border:1px solid var(--line); color:var(--faint); background:var(--bg);
+  }
+  .info:hover, .info:focus-visible { color:var(--accent); border-color:var(--accent); }
+
+  /* These carry more text than the one-line hints [data-tip] was built for, so they get more room
+     and a fixed side to open from. Which side is not cosmetic: centred on the marker, the panel is
+     wider than the card it belongs to, so the left-hand cards push it off the left edge of the page
+     and the right-hand ones off the right. Anchored per position, it always opens inward. */
+  .info::before { max-width:300px; padding:10px 12px; }
+  .info.tip-l::before { left:-3px; right:auto; transform:translateX(0) translateY(-4px); }
+  .info.tip-r::before { left:auto; right:-3px; transform:translateX(0) translateY(-4px); }
+  .info.tip-l:hover::before, .info.tip-l:focus-visible::before,
+  .info.tip-r:hover::before, .info.tip-r:focus-visible::before { transform:translateX(0) translateY(0); }
+  /* A tooltip inside a receded card inherits the card's 42% opacity and becomes unreadable — the
+     one moment you are certainly looking at it. Hovering the marker brings its card back to full
+     strength for as long as you are there. */
+  .focusable.recede:has(.info:hover), .focusable.recede:has(.info:focus-visible) { opacity:1; }
 
   /* ---- callouts: the point that would otherwise be left implicit ---- */
   .callout {
@@ -418,13 +837,195 @@
     margin:0; padding:13px 18px; border-bottom:1px solid var(--line); font-weight:650;
   }
   .card .body { padding:17px 18px; }
-  .legend { display:flex; gap:15px; flex-wrap:wrap; font-size:12px; color:var(--dim); margin-top:14px; }
-  .legend i { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; vertical-align:middle; }
+  /* ---- colour key ----
+     The key used to sit under the roster, which is the one place it is no use: by the time you
+     have scrolled past eight rows wondering what the red dot meant, you have already guessed.
+     It belongs beside the heading, next to the thing it decodes, and folded away until asked for
+     so three lines of reference text are not competing with live data for attention. */
+  /* Trimmed vertically so the button does not make this heading taller than every other card's. */
+  .card > h3.haskey { display:flex; align-items:center; padding-top:9px; padding-bottom:9px; }
+  .keywrap { position:relative; margin-left:auto; z-index:20; }
+  .keybtn {
+    display:inline-flex; align-items:center; gap:5px; cursor:help;
+    font:inherit; font-size:10.5px; letter-spacing:.6px; color:var(--faint);
+    background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:3px 9px;
+  }
+  .keywrap:hover .keybtn, .keybtn:focus-visible { color:var(--dim); border-color:var(--dim); }
+  .keybtn .kdots { display:inline-flex; gap:3px; }
+  .keybtn .kdots i { display:inline-block; width:7px; height:7px; border-radius:50%; }
+  /* Hover or keyboard focus, never a click: this is reference, so reaching for it must not be a
+     decision you then have to undo. */
+  .keypop {
+    position:absolute; top:calc(100% + 8px); right:0; z-index:21;
+    display:grid; grid-template-columns:auto auto 1fr; align-items:baseline; gap:9px 11px;
+    width:max-content; max-width:min(430px, 76vw); text-align:left;
+    background:var(--panel); border:1px solid var(--line); border-radius:9px;
+    padding:13px 15px; box-shadow:0 12px 30px rgba(0,0,0,.5);
+    text-transform:none; letter-spacing:0; font-weight:400;
+    opacity:0; visibility:hidden; transform:translateY(-3px); transition:opacity .12s, transform .12s;
+  }
+  /* display:contents so the three cells of every row line up on the popover's own grid; without
+     it each row would be its own box and the definitions would not share a left edge. It also
+     beats [hidden]'s display:none, hence the explicit rule below. */
+  .keyrow { display:contents; }
+  .keyrow[hidden] { display:none; }
+  .keypop i { display:inline-block; width:9px; height:9px; border-radius:50%; align-self:center; }
+  .keypop .kterm { font-size:12px; font-weight:650; color:var(--text); white-space:nowrap; }
+  .keypop .kdesc { font-size:12px; color:var(--dim); line-height:1.45; }
+  .keypop .khead { grid-column:1/-1; font-size:10px; letter-spacing:.8px; color:var(--faint); }
+  .keypop .kfoot {
+    grid-column:1/-1; font-size:11.5px; color:var(--faint); line-height:1.55;
+    border-top:1px solid var(--line); padding-top:10px; margin-top:1px;
+  }
+  .keypop .kfoot b { color:var(--dim); }
+  .keywrap:hover .keypop, .keybtn:focus-visible + .keypop, .keypop:hover {
+    opacity:1; visibility:visible; transform:none;
+  }
 
-  .tree + .tree { margin-top:17px; padding-top:15px; border-top:1px dashed var(--line); }
-  .tlabel { font-size:11.5px; color:var(--faint); margin-bottom:9px; }
-  .tlabel b { color:var(--dim); }
-  .chain { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  /* ---- next step ----
+     Its own strip, deliberately away from the deck's controls. Those act on the system; this one
+     only moves you through the walkthrough, and mixing the two invites pressing the wrong thing.
+     It stays disabled until the step it belongs to has actually finished, so it doubles as the
+     signal that something completed. */
+  .nextbar { display:flex; justify-content:flex-end; align-items:center; gap:12px; margin-bottom:16px; }
+  .nexthint { font-size:12.5px; color:var(--faint); }
+  .btn.next { border-color:color-mix(in srgb,var(--ok) 45%,var(--line)); color:var(--ok); }
+  .btn.next:hover:not(:disabled) { border-color:var(--ok); background:color-mix(in srgb,var(--ok) 14%,var(--panel)); }
+  .btn.next:disabled { color:var(--faint); border-color:var(--line); background:var(--panel); }
+  /* The emitting border. Runs only while the button is live, so motion on this page always means
+     "this is ready" rather than decoration. */
+  @keyframes emit {
+    0%   { box-shadow:0 0 0 0 color-mix(in srgb,var(--ok) 55%,transparent); }
+    70%  { box-shadow:0 0 0 9px transparent; }
+    100% { box-shadow:0 0 0 0 transparent; }
+  }
+  .btn.next.armed { animation:emit 1.8s ease-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .btn.next.armed { animation:none; border-color:var(--ok); } }
+
+  /* ---- service roster ----
+     What each service stands in for, and how it is doing right now. The percentage was previously
+     bare, which invited exactly the question "per cent of what?". It is labelled here. */
+  .roster { margin-top:18px; }
+  /* Fixed widths on the two right columns rather than auto. Sizing them to their own headings put
+     a wide gap between "0.00%" and its label and shoved Status against the card edge; pinning them
+     keeps every number in a straight line whatever the text above it says. */
+  .rrow {
+    display:grid;
+    grid-template-columns:minmax(150px,206px) minmax(150px,1fr) 76px 122px;
+    gap:18px; align-items:center;
+    padding:9px 11px; border-radius:8px;
+  }
+  /* Columns 3 and 4 are right-aligned in the head and the body alike, from one rule, so the label
+     can never drift out of line with the value beneath it. */
+  .rrow > :nth-child(3), .rrow > :nth-child(4) { text-align:right; }
+
+  .rrow.head {
+    padding-top:0; padding-bottom:9px; border-radius:0;
+    border-bottom:1px solid var(--line);
+    font-size:9.5px; letter-spacing:1.15px; text-transform:uppercase;
+    color:var(--faint); font-weight:700;
+  }
+  .rrow:not(.head) { border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent); }
+  .rrow:last-child { border-bottom:0; }
+  .rrow:not(.head):hover { background:color-mix(in srgb,var(--raised) 65%,transparent); }
+
+  .rrow .rn { font-family:var(--mono); font-size:12.5px; color:var(--text); display:flex; align-items:center; gap:10px; }
+  /* The halo makes an 8px dot readable at a distance without growing it. */
+  .rrow .rn i {
+    width:8px; height:8px; border-radius:50%; flex:none; background:var(--ok);
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 16%,transparent);
+  }
+  .rrow .rd { font-size:12.5px; color:var(--dim); line-height:1.45; }
+  .rrow .rp {
+    font-family:var(--mono); font-size:12.5px;
+    color:var(--faint); font-variant-numeric:tabular-nums;
+  }
+  /* Status as a pill, matching how severity already reads elsewhere on the page. Bare coloured
+     text at the right edge looked like a stray word rather than a state. */
+  .rrow .rs {
+    justify-self:end; font-size:10px; font-weight:700; letter-spacing:.4px;
+    text-transform:uppercase; white-space:nowrap;
+    padding:3px 9px; border-radius:999px;
+    color:var(--ok);
+    background:color-mix(in srgb,var(--ok) 12%,transparent);
+    border:1px solid color-mix(in srgb,var(--ok) 34%,transparent);
+  }
+  .rrow.head .rs { all:unset; text-align:right; }
+
+  .rrow.warn .rn i { background:var(--warn); box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 18%,transparent); }
+  .rrow.warn .rp { color:var(--warn); font-weight:700; }
+  .rrow.warn .rs {
+    color:var(--warn); background:color-mix(in srgb,var(--warn) 13%,transparent);
+    border-color:color-mix(in srgb,var(--warn) 38%,transparent);
+  }
+  .rrow.bad .rn i { background:var(--crit); box-shadow:0 0 0 3px color-mix(in srgb,var(--crit) 20%,transparent); }
+  .rrow.bad .rp { color:var(--crit); font-weight:700; }
+  .rrow.bad .rs {
+    color:var(--crit); background:color-mix(in srgb,var(--crit) 13%,transparent);
+    border-color:color-mix(in srgb,var(--crit) 40%,transparent);
+  }
+  .rrow.origin .rn i { background:var(--origin); box-shadow:0 0 0 3px color-mix(in srgb,var(--origin) 22%,transparent); }
+  .rrow.origin .rs {
+    color:var(--origin); background:color-mix(in srgb,var(--origin) 15%,transparent);
+    border-color:color-mix(in srgb,var(--origin) 45%,transparent);
+  }
+  .rrow.dead .rn, .rrow.dead .rd { opacity:.5; }
+
+  /* The window belongs in the card heading, said once, rather than inside a column label it made
+     twice as wide as its own values. */
+  .card > h3 .hsub {
+    text-transform:none; letter-spacing:0; font-weight:400;
+    font-size:11.5px; color:var(--faint); margin-left:9px;
+  }
+
+  @media (max-width: 760px) {
+    .rrow { grid-template-columns:1fr auto; gap:5px 14px; padding:10px 11px; }
+    .rrow .rd { grid-column:1 / -1; }
+    .rrow > :nth-child(3) { text-align:left; }
+    .rrow.head { display:none; }
+  }
+
+  /* ---- dependency paths ----
+     The two call chains used to be a label and a row of boxes sitting straight on the card, with
+     the roster table beginning immediately beneath on the same surface. Nothing said where the
+     diagram ended and the table began, so the whole card read as one undifferentiated list and the
+     topology — the thing that makes the correlation result mean anything — was the part that got
+     skipped. Each path is now a recessed panel of its own, carrying its name in a pill and its own
+     accent down the left edge, and the two are separated from the table by a labelled rule. */
+  .pathscap { font-size:11.5px; color:var(--faint); line-height:1.5; margin-bottom:11px; }
+  .paths { display:flex; flex-direction:column; gap:11px; }
+  .path {
+    background:var(--bg); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:0 9px 9px 0; padding:12px 15px 14px;
+  }
+  /* The browse path is deliberately quieter. Both are structure rather than health, so neither may
+     borrow a colour that means something on a node — but the order path is the one the demo acts
+     on, and equal weight made them look like a pair of equally likely things to break. */
+  .path.browse { border-left-color:color-mix(in srgb,var(--dim) 55%,var(--line)); }
+  .phead { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .pname {
+    flex:none; font-size:9.5px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
+    color:var(--accent); background:color-mix(in srgb,var(--accent) 13%,transparent);
+    border:1px solid color-mix(in srgb,var(--accent) 32%,transparent);
+    padding:3px 10px; border-radius:20px;
+  }
+  .path.browse .pname {
+    color:var(--dim); background:color-mix(in srgb,var(--dim) 11%,transparent); border-color:var(--line);
+  }
+  .pmeta { font-size:11.5px; color:var(--faint); line-height:1.45; }
+
+  .chain { display:flex; align-items:center; flex-wrap:wrap; row-gap:9px; }
+  /* Services at the same depth stack instead of sitting side by side, so "checkout calls both cart
+     and payment" is legible as a fork rather than as a longer queue. */
+  .tier { display:flex; flex-direction:column; gap:6px; }
+  /* A drawn connector, not a text arrow: an arrow glyph sits on the text baseline and drifts off
+     centre the moment a tier is two nodes tall. */
+  .link { flex:none; position:relative; width:30px; height:10px; margin:0 4px; }
+  .link::before { content:''; position:absolute; top:4.5px; left:0; width:23px; height:1px; background:var(--line); }
+  .link::after {
+    content:''; position:absolute; top:2px; right:2px; width:6px; height:6px;
+    border-top:1.4px solid var(--line); border-right:1.4px solid var(--line); transform:rotate(45deg);
+  }
   .node {
     font-family:var(--mono); font-size:12.5px; padding:7px 11px; border-radius:7px;
     border:1px solid var(--line); background:var(--raised); white-space:nowrap; transition:.35s;
@@ -435,7 +1036,122 @@
   .node.origin { border-color:var(--origin); background:color-mix(in srgb,var(--origin) 20%,transparent); font-weight:700; }
   .node.origin i { background:var(--origin); }
   .node.down { border-style:dashed; opacity:.6; }
-  .arrow { color:var(--faint); font-size:13px; }
+
+  /* The rule that says the diagram is over and the table has started. */
+  .rsplit {
+    display:flex; align-items:center; gap:11px; margin:20px 0 3px;
+    font-size:9.5px; letter-spacing:1px; text-transform:uppercase; color:var(--faint); white-space:nowrap;
+  }
+  .rsplit::after { content:''; flex:1; height:1px; background:var(--line); }
+
+  /* ---- the live grid ----
+     Two columns on a wide screen, one on a narrow one. Every panel is the same height and scrolls
+     inside itself, so the page length does not lurch every time a breach lands. */
+  .livegrid {
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(400px,1fr));
+    gap:13px; margin-bottom:20px;
+  }
+  .lg {
+    display:flex; flex-direction:column; min-width:0;
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+  }
+  .lg > h3 {
+    display:flex; align-items:center; gap:9px; margin:0; padding:11px 15px;
+    border-bottom:1px solid var(--line);
+    font-size:11px; text-transform:uppercase; letter-spacing:.9px; font-weight:650; color:var(--dim);
+  }
+  .lgcount {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:0; color:var(--text);
+    background:var(--raised); border:1px solid var(--line); border-radius:20px; padding:1px 8px;
+    white-space:nowrap; cursor:help;
+  }
+  /* Open carries the colour of an incident; resolved carries the colour of one that is over. */
+  .lgcount.open {
+    color:var(--crit); border-color:color-mix(in srgb,var(--crit) 38%,var(--line));
+    background:color-mix(in srgb,var(--crit) 10%,transparent);
+  }
+  .lgcount.open.idle { color:var(--faint); border-color:var(--line); background:var(--raised); }
+  .lgcount.done { color:var(--ok); border-color:color-mix(in srgb,var(--ok) 32%,var(--line));
+                  background:color-mix(in srgb,var(--ok) 8%,transparent); }
+  .lghint {
+    margin-left:auto; text-align:right; text-transform:none; letter-spacing:0;
+    font-size:11px; font-weight:400; color:var(--faint);
+  }
+  .lghint:empty { display:none; }
+  /* A fixed viewport per panel. Without it the incident list grows without bound during a storm
+     and pushes everything else off the screen. */
+  .lgbody { padding:14px 15px; overflow-y:auto; max-height:330px; flex:1; }
+  .lgbody > .rca { margin:0; }
+
+  /* ---- scrollbars ----
+     The platform default is an overlay bar that fades out when idle, so a panel with more content
+     below the fold looks exactly like one that simply ends there — you find the rest by accident.
+     These stay visible whenever the content overflows, which is the only signal that there is more
+     to read. Scoped to the panels that actually scroll rather than applied to the document, so the
+     page chrome keeps the scrollbar the reader's OS gave it. */
+  .lgbody, .scroll, .pages, pre.rca, .step-pop, .tabbody {
+    scrollbar-width:thin;
+    scrollbar-color:var(--line) transparent;
+  }
+  .lgbody::-webkit-scrollbar, .scroll::-webkit-scrollbar, .pages::-webkit-scrollbar,
+  pre.rca::-webkit-scrollbar, .step-pop::-webkit-scrollbar, .tabbody::-webkit-scrollbar {
+    width:10px; height:10px;
+  }
+  .lgbody::-webkit-scrollbar-track, .scroll::-webkit-scrollbar-track, .pages::-webkit-scrollbar-track,
+  pre.rca::-webkit-scrollbar-track, .step-pop::-webkit-scrollbar-track, .tabbody::-webkit-scrollbar-track {
+    background:transparent;
+  }
+  /* The border is what makes it read as inset rather than as a bar laid on top of the content. */
+  .lgbody::-webkit-scrollbar-thumb, .scroll::-webkit-scrollbar-thumb, .pages::-webkit-scrollbar-thumb,
+  pre.rca::-webkit-scrollbar-thumb, .step-pop::-webkit-scrollbar-thumb, .tabbody::-webkit-scrollbar-thumb {
+    background:var(--line); border-radius:20px; border:2px solid var(--panel); background-clip:padding-box;
+  }
+  .lgbody:hover::-webkit-scrollbar-thumb, .scroll:hover::-webkit-scrollbar-thumb,
+  .pages:hover::-webkit-scrollbar-thumb, pre.rca:hover::-webkit-scrollbar-thumb {
+    background:var(--faint); background-clip:padding-box;
+  }
+  .lgbody::-webkit-scrollbar-corner { background:transparent; }
+
+  /* ---- reference ----
+     Collapsed by default. These two are worth reading once and never again in the same session,
+     and while they were tabs alongside the live panels they took two of the six slots that should
+     have been showing what was happening. */
+  .reference { border:1px solid var(--line); border-radius:10px; background:var(--panel); margin-bottom:6px; }
+  .reference > summary {
+    cursor:pointer; padding:12px 16px; font-size:12.5px; font-weight:600; color:var(--dim);
+    list-style:none; display:flex; align-items:center; gap:9px;
+  }
+  .reference > summary::-webkit-details-marker { display:none; }
+  .reference > summary::before {
+    content:'▸'; color:var(--faint); font-size:11px; transition:transform .15s;
+  }
+  .reference[open] > summary::before { transform:rotate(90deg); }
+  .reference > summary:hover { color:var(--text); }
+  .reference[open] > summary { border-bottom:1px solid var(--line); }
+  .reference .tabs { border-radius:0; }
+  .reference .tabbody { border:0; border-radius:0 0 10px 10px; }
+
+  /* ---- promql links ----
+     Each row is the whole thing at once: what it answers, the exact expression, and why it is
+     worth running. A bare list of queries would be no more use than the empty console it exists
+     to replace. */
+  .qlist { display:grid; gap:9px; }
+  .qrow {
+    display:grid; gap:5px; padding:12px 14px; text-decoration:none;
+    background:var(--bg); border:1px solid var(--line); border-left:2.5px solid var(--line);
+    border-radius:0 9px 9px 0; transition:border-color .14s, background .14s;
+  }
+  .qrow:hover { border-color:color-mix(in srgb,var(--accent) 45%,var(--line)); border-left-color:var(--accent); }
+  .qtop { display:flex; align-items:baseline; gap:12px; }
+  .qname { font-size:13px; font-weight:650; color:var(--text); }
+  .qgo { margin-left:auto; flex:none; font-size:11px; color:var(--faint); white-space:nowrap; }
+  .qrow:hover .qgo { color:var(--accent); }
+  .qexpr {
+    font-family:var(--mono); font-size:11.5px; line-height:1.5; color:var(--dim);
+    background:var(--panel); border:1px solid var(--line); border-radius:6px;
+    padding:6px 9px; overflow-x:auto; white-space:pre;
+  }
+  .qwhy { font-size:11.5px; color:var(--faint); line-height:1.5; }
 
   /* ---- tabs ---- */
   .tabs { display:flex; gap:3px; border-bottom:1px solid var(--line); margin-bottom:0; flex-wrap:wrap; }
@@ -471,7 +1187,8 @@
   td { padding:5px 10px 5px 0; border-top:1px solid var(--line); white-space:nowrap; }
   .sev-CRITICAL { color:var(--crit); } .sev-HIGH { color:var(--warn); } .sev-MEDIUM { color:var(--accent); }
 
-  #feed { max-height:340px; overflow-y:auto; font-family:var(--mono); font-size:12.5px; }
+  /* The scroll box is now .lgbody, which owns the height for every panel in the grid alike. */
+  #feed { font-family:var(--mono); font-size:12px; line-height:1.5; }
   #feed div { padding:5px 0; border-bottom:1px solid var(--line); }
   #feed div:last-child { border-bottom:0; }
   #feed .ts { color:var(--faint); margin-right:9px; }
@@ -479,6 +1196,8 @@
   .c-join { color:var(--accent); }
   .c-res { color:var(--ok); font-weight:700; }
   .c-sev { color:var(--warn); }
+  .c-ok { color:var(--ok); }
+  .c-act { color:var(--accent); font-weight:700; }
 
   pre.rca { white-space:pre-wrap; font-family:var(--mono); font-size:12.5px; margin:0;
             padding:15px; background:var(--raised); border:1px solid var(--line); border-radius:8px; }
@@ -491,7 +1210,8 @@
   .flow .i { font-family:var(--mono); color:var(--accent); font-weight:700; }
   .flow .d { color:var(--dim); font-size:12.5px; }
   .flow .v { font-family:var(--mono); font-size:12.5px; color:var(--dim); white-space:nowrap; }
-  .flow .soon { opacity:.5; }
+  /* The rationale list has no third column — it is prose, not measurements. */
+  .flow.two { grid-template-columns:auto 1fr; }
 </style>
 </head>
 <body>
@@ -518,7 +1238,7 @@
     <div class="headright">
       <div class="controls">
         <button class="ctl tip-r" id="b-freeze"
-                data-tip="Pause polling so nothing moves while you talk over the screen. Nothing stops in the platform — only this page stops asking.">
+                data-tip="Pause polling so nothing moves while you talk over the screen. Nothing stops in the platform; only this page stops asking.">
           <svg class="ico pause" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
             <rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/>
           </svg>
@@ -555,7 +1275,7 @@
       <!-- Icons carry the destination faster than the label does, and they are what makes the
            grouping legible at a glance: two charts, then a series and a payload. -->
       <a href="http://localhost:3001/d/sentinel-fleet-slo" target="_blank" rel="noreferrer"
-         data-tip="Grafana — burn rate per service against the 1× / 6× / 14.4× threshold lines, plus error budget remaining.">
+         data-tip="Grafana: burn rate per service against the 1× / 6× / 14.4× threshold lines, plus error budget remaining.">
         <svg class="lico" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
           <rect x="1.8" y="9" width="2.7" height="5.2" rx=".9"/>
           <rect x="6.65" y="5.4" width="2.7" height="8.8" rx=".9"/>
@@ -563,7 +1283,7 @@
         </svg>Fleet SLOs</a>
 
       <a href="http://localhost:3001/d/sentinel-internals" target="_blank" rel="noreferrer"
-         data-tip="Grafana — Sentinel watching itself: evaluation cycle p50/p95/p99, consumer lag, dead letters, RCA latency.">
+         data-tip="Grafana. Sentinel watching itself: evaluation cycle p50/p95/p99, consumer lag, dead letters, RCA latency.">
         <svg class="lico" viewBox="0 0 16 16" aria-hidden="true" fill="none"
              stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
           <path d="M2.4 12.4a6.4 6.4 0 1 1 11.2 0"/>
@@ -572,8 +1292,16 @@
 
       <span class="sep" aria-hidden="true"></span>
 
-      <a href="http://localhost:9090" target="_blank" rel="noreferrer"
-         data-tip="Prometheus — the raw series and the recording rules that pre-compute burn rate before the evaluator ever asks.">
+      <!-- Lands on a drawn graph, not on /graph.
+           Prometheus has no landing page: its query console opens with an empty expression box
+           reading "No data queried yet", which is correct and looks exactly like a broken service.
+           Anyone following this link to see the raw series arrives at nothing and has to already
+           know PromQL to get out of it. The expression goes in the URL instead, so the tab opens
+           on the burn rate per service — the one number this whole project is about. More of them
+           are listed under Reference on this page. -->
+      <a href="http://localhost:9090/graph?g0.expr=slo%3Aerror_ratio%3A2m%20%2F%200.001&g0.tab=1&g0.range_input=30m"
+         target="_blank" rel="noreferrer"
+         data-tip="Prometheus, opened on burn rate per service over the last 30 minutes. The raw series and the recording rules that pre-compute it before the evaluator ever asks.">
         <svg class="lico" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
           <path d="M8 1.3c2.7 2.7 4.3 4.3 4.3 6.9a4.3 4.3 0 1 1-8.6 0c0-1.7.8-2.7 1.7-3.7 0 1.2.6 1.9 1.3 1.9.9 0 1.4-.9 1.4-2.3 0-1-.3-1.9-.1-2.8Z"/>
         </svg>Raw metrics</a>
@@ -581,7 +1309,7 @@
       <!-- Swagger, not /api/v1/incidents: every API route is behind X-Api-Key, so a raw link opened
            in a new tab sends no header and returns 401. Swagger has an Authorize button. -->
       <a href="/swagger-ui.html" target="_blank" rel="noreferrer"
-         data-tip="Swagger UI — every endpoint, explorable. Press Authorize first and paste the API key, or calls return 401.">
+         data-tip="Swagger UI: every endpoint, explorable. Press Authorize first and paste the API key, or calls return 401.">
         <svg class="lico" viewBox="0 0 16 16" aria-hidden="true" fill="none"
              stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M6.3 2.5c-1.7 0-2.2.9-2.2 2.1v1.9c0 1-.5 1.5-1.4 1.5.9 0 1.4.6 1.4 1.5v1.9c0 1.2.5 2.1 2.2 2.1"/>
@@ -593,143 +1321,357 @@
 
 <div class="wrap">
 
+  <!-- Rail, narration and controls are one panel on purpose: progress, then what is happening,
+       then what to press about it. Splitting them put two control surfaces at opposite ends of a
+       paragraph, which is the single most confusing thing this page did. -->
+  <section class="deck" id="deck">
   <div class="rail">
-    <div class="step" id="st-1"><div class="num">Step 1</div><div class="name">Define objectives</div></div>
-    <div class="step" id="st-2"><div class="num">Step 2</div><div class="name">Break a service</div></div>
-    <div class="step" id="st-3"><div class="num">Step 3</div><div class="name">Watch it correlate</div></div>
-    <div class="step" id="st-4"><div class="num">Step 4</div><div class="name">Recover</div></div>
+    <!-- Each popover carries what the narrator does NOT say: the concrete numbers, the config, and
+         the trap. Repeating the prose in a panel you have to open would be worse than no panel. -->
+    <div class="step" id="st-1">
+      <button class="step-go" data-act="b-seed">
+        <span class="num"><span class="tick">✓</span>Step 1</span>
+        <span class="name">Set reliability targets</span><span class="press">▸</span>
+      </button>
+      <button class="step-i" aria-expanded="false" aria-label="Detail on step 1">i</button>
+      <div class="step-pop" role="note" hidden>
+        <h4>What gets created</h4>
+        <ul>
+          <li>Two targets per service, sixteen in total: <b>99.9% of requests succeed</b>, and <b>99% finish within 500 ms</b>. Both judged over the last 30 days of traffic.</li>
+          <li>A target of <b>100%</b> is rejected with a 400. It leaves no room to fail at all, so the very first failed request out of <code>payment</code> would put it permanently behind with no way to recover.</li>
+          <li>The speed target must be one of 100/250/500/1000/2000 ms, because those are the only cut-offs the services actually record timings against (their histogram buckets). Ask for 400 ms and the query returns <b>nothing at all rather than an error</b>.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="step" id="st-2">
+      <button class="step-go" data-act="b-cascade">
+        <span class="num"><span class="tick">✓</span>Step 2</span>
+        <span class="name">Break a service</span><span class="press">▸</span>
+      </button>
+      <button class="step-i" aria-expanded="false" aria-label="Detail on step 2">i</button>
+      <div class="step-pop" role="note" hidden>
+        <h4>What the injection does</h4>
+        <ul>
+          <li><b>35% errors and +600 ms</b> into <b>ledger-service</b>, applied through that service's own chaos endpoint.</li>
+          <li>ledger-service is the deepest node in the order path and calls nothing, so everything that fails above it is a <b>consequence, not a second cause</b>.</li>
+          <li>The browse path is deliberately left alone. It is the control: if it breaches too, correlation is grouping by time rather than by dependency.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Deliberately not a button. Nothing here is triggered: the evaluator notices, the
+         correlator groups, the incident opens. A control claiming to do that would be theatre. -->
+    <div class="step" id="st-3">
+      <div class="step-go">
+        <span class="num"><span class="tick">✓</span>Step 3 · automatic</span>
+        <span class="name">Watch it correlate</span>
+      </div>
+      <button class="step-i" aria-expanded="false" aria-label="Detail on step 3">i</button>
+      <div class="step-pop" role="note" hidden>
+        <h4>The thresholds behind it</h4>
+        <ul>
+          <li>A breach needs <b>both</b> windows over the line: 2 m long and 1 m short in this profile, at <b>14.4×</b> for CRITICAL. The long window proves it is sustained, the short one proves it is still happening.</li>
+          <li>Correlation walks only the subgraph <b>induced by breaching services</b>. Over the full graph all eight are permanently one component and every failure would collapse into one incident.</li>
+          <li>The correlation key is <b>frozen at creation</b>. The origin is recomputed for display, but an incident is never re-keyed.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="step" id="st-4">
+      <button class="step-go" data-act="b-reset">
+        <span class="num"><span class="tick">✓</span>Step 4</span>
+        <span class="name">Recover</span><span class="press">▸</span>
+      </button>
+      <button class="step-i" aria-expanded="false" aria-label="Detail on step 4">i</button>
+      <div class="step-pop" role="note" hidden>
+        <h4>How it closes itself</h4>
+        <ul>
+          <li>Reset clears chaos on all eight services. It does <b>not</b> touch incidents; those are closed by the platform or not at all.</li>
+          <li>Auto-resolve needs <b>4 minutes with no breach</b> on any member, swept every 15 s in this profile. Twice the correlation window, so a cascade drawing breath is not mistaken for a recovery.</li>
+          <li>Nothing is acknowledged or closed by hand. The full timeline is kept for a postmortem.</li>
+        </ul>
+      </div>
+    </div>
   </div>
 
-  <div class="narrator" id="narr">
+  <div class="narrator">
     <h2 id="n-title">Connecting…</h2>
-    <p class="now" id="n-now">Reading the current state of the fleet.</p>
+    <p class="now" id="n-now">Reading the current state of the services.</p>
+    <!-- The per-service detail lives in the roster below, not here. This is the one-line summary. -->
+    <div class="ready" id="ready" hidden>
+      <div class="ready-head">
+        <span class="ready-count" id="ready-count">—</span>
+        <span class="ready-label" id="ready-label"></span>
+      </div>
+    </div>
     <p class="why"><span class="why-label">Why</span><span id="n-why">—</span></p>
   </div>
 
   <div class="actions">
-    <button id="b-seed" class="btn go">Start demo</button>
-    <button id="b-cascade" class="btn bad" disabled>Break order path</button>
-    <button id="b-both" class="btn bad" disabled>Break both paths</button>
-    <button id="b-kill" class="btn bad" disabled title="Halts the process. Docker restarts it; the incident must survive.">Kill Sentinel</button>
-    <button id="b-reset" class="btn" disabled>Reset</button>
-    <span class="hint" id="ctl-msg"></span>
+    <div class="actrow">
+    <!-- The label is swapped rather than left to grey out under the same words. A disabled button
+         still reading "Start demo" says "you cannot start", which is the opposite of the truth;
+         "Targets set" says the job is done. It also has to be swapped rather than styled, because
+         a disabled button matches neither :hover nor title in Chrome, so the tooltip explaining
+         itself is exactly the thing that stops working the moment it is switched off. -->
+    <button id="b-seed" class="btn primary tip-l"
+            data-tip="Creates one availability and one latency objective per service, sixteen in all. Switches itself off once they all exist.">
+      <svg class="bico" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+        <path id="b-seed-i" d="M5 3.4v9.2a.8.8 0 0 0 1.22.68l7.2-4.6a.8.8 0 0 0 0-1.36l-7.2-4.6A.8.8 0 0 0 5 3.4Z"/>
+      </svg><span id="b-seed-t">Start demo</span></button>
+
+    <button id="b-cascade" class="btn danger" disabled
+            data-tip="Breaks ledger-service alone. Five services breach; you should get exactly one incident.">
+      <svg class="bico" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+        <path d="M9.4 1.4 3.5 9.2h3.7l-.9 5.5 6-8H8.7l.7-5.3Z"/>
+      </svg>Break order path</button>
+
+    <button id="b-both" class="btn danger" disabled
+            data-tip="Breaks ledger-service and catalog-service together. They sit in disconnected trees, so this must produce two incidents, not one. That is the negative case.">
+      <svg class="bico" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+        <path d="M6.7 1.5 2.5 8.3h2.7l-.6 4.7 4.4-6.8H6.2l.5-4.7Z"/>
+        <path d="M12.5 3.3 9.3 8.6h2.1l-.5 3.7 3.4-5.3h-2.2l.4-3.7Z" opacity=".6"/>
+      </svg>Break both paths</button>
+
+    <span class="divider" aria-hidden="true"></span>
+
+    <button id="b-kill" class="btn danger" disabled
+            data-tip="Halts the process outright, with no graceful shutdown and offsets left uncommitted. Docker restarts it, and the incident must come back unchanged and undoubled.">
+      <svg class="bico" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+           stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+        <path d="M8 1.9v6.3"/><path d="M4.5 4.1a5.2 5.2 0 1 0 7 0"/>
+      </svg>Kill Sentinel</button>
+
+    <span class="spacer"></span>
+
+    <button id="b-clear" class="btn"
+            data-tip="Deletes the incident history and stops any injected failure. It does NOT erase the errors already recorded, so if you clear right after a break the evaluator will open a fresh incident until those age out of the window. Reliability targets are untouched.">
+      <svg class="bico" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+           stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2.6 4.3h10.8"/><path d="M6.1 4.3V2.9h3.8v1.4"/>
+        <path d="M3.9 4.3l.7 8.3a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9l.7-8.3"/>
+      </svg>Wipe incidents</button>
+
+    <button id="b-reset" class="btn" disabled
+            data-tip="Turns the injected failure off across all eight services. It deliberately leaves incidents alone: watching one auto-resolve on its own after 4 quiet minutes is step 4 of the demo. Use Wipe incidents to delete them outright.">
+      <svg class="bico" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+           stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M13.6 8a5.6 5.6 0 1 1-1.8-4.1"/><path d="M13.9 1.7v3.5h-3.5"/>
+      </svg>Stop the failure</button>
+    </div>
+    <!-- What to press next, always. The page previously answered this only through a disabled
+         Next button reading "Waiting for step 1 to finish", which describes the walkthrough's
+         state and not the reader's job — and reads as "the machine is busy" when the truth is
+         "the machine is waiting for you". Every state below names either a button or the thing
+         being waited on. -->
+    <p class="nextup calm" id="ctl-next"><span class="nk" id="ctl-next-k">Next</span><span id="ctl-next-t">Reading the current state of the stack…</span></p>
+    <p class="actmsg" id="ctl-msg"></p>
   </div>
   <div id="ctl-err" class="err" hidden></div>
+  </section>
+
+  <!-- Advancing the walkthrough is not an action on the system, so it does not sit with the ones
+       that are. It arms only once the current step has genuinely finished. -->
+  <div class="nextbar">
+    <span class="nexthint" id="next-hint"></span>
+    <button class="btn next" id="b-next" disabled
+            data-tip="Moves the walkthrough on. It stays locked until the step you are on has actually completed, so it is also how you know it did.">
+      Next step
+      <svg class="bico" viewBox="0 0 16 16" aria-hidden="true" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 8h9.4"/><path d="M8.8 4.2 12.9 8l-4.1 3.8"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Directly under the deck: what the eight services stand in for, and how each is doing right
+       now. Previously this sat below three panels of aggregate numbers, so the thing the whole
+       demo acts upon was the last thing you reached. -->
+  <div class="card focusable" id="fleetcard">
+    <h3 class="haskey">The services<span class="hsub" id="roster-window"></span>
+      <span class="keywrap">
+        <button type="button" class="keybtn" aria-describedby="colour-key">
+          <span class="kdots" aria-hidden="true">
+            <i style="background:var(--ok)"></i><i style="background:var(--crit)"></i><i style="background:var(--origin)"></i>
+          </span>Key
+        </button>
+        <!-- Built from STATUS in the script, so the badge in the table and its explanation here
+             cannot drift apart. -->
+        <!-- Spans throughout, not divs: this lives inside an h3, whose content model is phrasing
+             content only. Browsers forgive it; validators and screen readers do not. -->
+        <span class="keypop" id="colour-key" role="tooltip"></span>
+      </span>
+    </h3>
+    <div class="body">
+      <div id="topology"><div class="empty">loading…</div></div>
+      <div class="rsplit">Per-service status</div>
+      <div class="roster" id="roster"></div>
+    </div>
+  </div>
 
   <!-- Shown only while an interesting claim is actually true, so it never becomes wallpaper. -->
   <div class="callout" id="callout" hidden><span class="k" id="co-k"></span><span id="co-b"></span></div>
 
+  <!-- The caption is not decoration. These four marks are blank until something has actually been
+       broken, and four bare dashes give no way to tell "nothing has run yet" apart from "this is
+       broken". It says which of the two you are looking at, every time. -->
+  <div class="ribcap" id="ribcap"></div>
   <div class="ribbon focusable" id="ribbon">
-    <div class="mark" id="mk-chaos"><div class="k">Failure injected</div><div class="t">—</div><div class="s">chaos into the leaf</div></div>
-    <div class="mark" id="mk-breach"><div class="k">First breach</div><div class="t">—</div><div class="s">burn rate crossed 14.4x</div></div>
-    <div class="mark" id="mk-inc"><div class="k">Incident open</div><div class="t">—</div><div class="s">correlated and committed</div></div>
-    <div class="mark" id="mk-rca"><div class="k">Root cause drafted</div><div class="t">—</div><div class="s">off the detection path</div></div>
+    <!-- tip-l on the left pair, tip-r on the right pair: the panel is wider than one mark, so a
+         tooltip has to open towards the middle of the page from wherever it is. -->
+    <div class="mark" id="mk-chaos">
+      <div class="k"><span class="mnum">1</span>Failure injected<span class="info tip-l" tabindex="0"
+        data-tip="t=0 for everything to its right — the moment you pressed a Break button and 35% errors plus 600ms of latency went into the leaf service. The three timings after this one are all measured from here.">i</span></div>
+      <div class="t">—</div><div class="s">chaos into the leaf</div>
+    </div>
+    <div class="mark" id="mk-breach">
+      <div class="k"><span class="mnum">2</span>First breach<span class="info tip-l" tabindex="0"
+        data-tip="Seconds from injection to the evaluator deciding a service had broken its target. Slow by design: Prometheus scrapes every 15s and the burn rate is averaged over a window, so errors must accumulate before they count. Typically 25-45s.">i</span></div>
+      <div class="t">—</div><div class="s">burn rate crossed 14.4x</div>
+    </div>
+    <div class="mark" id="mk-inc">
+      <div class="k"><span class="mnum">3</span>Incident open<span class="info tip-r" tabindex="0"
+        data-tip="Seconds from injection to one incident being committed to Postgres. The gap between this and First breach is correlation working: several breaches arrive, are grouped into one connected component, and produce a single incident instead of one alert each.">i</span></div>
+      <div class="t">—</div><div class="s">correlated and committed</div>
+    </div>
+    <div class="mark" id="mk-rca">
+      <div class="k"><span class="mnum">4</span>Root cause drafted<span class="info tip-r" tabindex="0"
+        data-tip="Seconds from injection to a written root-cause hypothesis. It sits behind Kafka on purpose so a slow language model cannot hold up detection — which is why this can lag well behind the incident without delaying anything that matters.">i</span></div>
+      <div class="t">—</div><div class="s">off the detection path</div>
+    </div>
   </div>
 
   <div class="hero focusable" id="hero">
     <div>
       <div class="big" id="s-ratio">—</div>
-      <div class="biglabel">Alerts collapsed</div>
-      <div class="bighint">breaches absorbed per incident — the product, as a number</div>
+      <div class="biglabel">Alerts collapsed
+        <span class="info tip-l" tabindex="0" data-tip="The best single result on record: the one incident that absorbed the most breaches. 130:1 means 130 separate alerts a conventional setup would have paged you with arrived as one incident naming one origin service. Deliberately the maximum and not the average — averaging it against every quiet one-breach incident buries the result the system exists to produce.">i</span>
+      </div>
+      <div class="bighint" id="s-ratio-h">breaches absorbed by a single incident; the product, as a number</div>
     </div>
     <div class="collapse">
       <div class="colside">
-        <div class="h">What a naive system pages you for</div>
+        <div class="h">What a naive system pages you for<span class="hwhen" id="collapse-when"></span></div>
         <div class="pages" id="pages"><span class="empty">nothing yet</span></div>
+        <div class="colfoot" id="pages-foot"></div>
       </div>
       <div class="colarrow">&rarr;</div>
       <div class="colside">
         <div class="h">What Sentinel wakes you for</div>
         <div id="oneinc"><span class="empty">nothing yet</span></div>
+        <div class="colfoot" id="oneinc-foot"></div>
       </div>
     </div>
   </div>
 
-  <div class="stats">
-    <div class="stat">
+  <div class="stats focusable" id="stats">
+    <div class="stat k-breach" id="st-breaches">
       <div class="n" id="s-breaches">0</div>
-      <div class="l">Raw breaches</div>
+      <div class="l">Raw breaches
+        <span class="info tip-l" tabindex="0" data-tip="Every individual objective violation the evaluator recorded. One broken service produces many — one per objective, per service it drags down — and this is the number a conventional setup would have turned into that many pages.">i</span>
+      </div>
       <div class="h">every objective violation the evaluator detected</div>
     </div>
-    <div class="stat">
+    <div class="stat k-inc" id="st-open">
       <div class="n" id="s-open">0</div>
-      <div class="l">Open incidents</div>
+      <div class="l">Open incidents
+        <span class="info tip-l" tabindex="0" data-tip="Incidents not yet resolved — the number that would actually reach a human. Breaking one dependency chain should leave this at 1 however many services fall over behind it; breaking both paths should make it 2, because they share no dependency.">i</span>
+      </div>
       <div class="h">what you actually get woken up for</div>
     </div>
-    <div class="stat">
+    <div class="stat k-self" id="st-cycle">
       <div class="n" id="s-cycle">—</div>
-      <div class="l">Evaluation cycle</div>
-      <div class="h">mean time to judge every objective, against a 15s interval</div>
+      <div class="l">Evaluation cycle
+        <span class="info tip-r" tabindex="0" data-tip="How long one pass of the evaluator takes at the 99th percentile, against the 15s interval it must finish inside. The scaling metric: as it approaches 15s the evaluator can no longer keep up, and that is the ceiling. Bucket-derived, so read it as an upper bound. Non-zero from boot because the evaluator runs every 15s whether or not any objectives exist.">i</span>
+      </div>
+      <div class="h" id="s-cycle-h">p99 of one full pass, against a 15s interval</div>
     </div>
   </div>
 
   <div class="rcacard focusable" id="rcacard" hidden>
     <div class="rcahead">
-      <h3>Root cause — drafted automatically</h3>
+      <h3>Root cause, drafted automatically</h3>
       <span class="tag" id="rca-tag">—</span>
       <span class="spacer"></span>
       <span class="hint" id="rca-when"></span>
       <button class="btn ghost" id="b-regen">Regenerate</button>
     </div>
-    <div class="body" style="padding:17px 18px"><pre class="rca" id="rca-live">—</pre></div>
-  </div>
-
-  <div class="card focusable" id="fleetcard">
-    <h3>The fleet</h3>
-    <div class="body">
-      <div id="topology"><div class="empty">loading…</div></div>
-      <div class="legend">
-        <span><i style="background:var(--ok)"></i>meeting its objective</span>
-        <span><i style="background:var(--crit)"></i>breaching</span>
-        <span><i style="background:var(--origin)"></i>inferred origin</span>
-        <span id="down-warn" hidden style="color:var(--crit)">dashed = not responding</span>
+    <div class="body" style="padding:17px 18px">
+      <pre class="rca" id="rca-live">—</pre>
+      <!-- Shown only when the deterministic drafter wrote it, which is the default and the state
+           every reviewer will see. Without this the "template" tag reads as a missing feature
+           rather than as the designed-for degraded path. -->
+      <div class="aiNote" id="rca-ai" hidden>
+        <b>This draft was written without a language model.</b> The drafter is a seam, not a
+        hard-wired dependency: point <code>LLM_BASE_URL</code> and <code>LLM_API_KEY</code> at any
+        OpenAI-compatible provider and the same timeline is sent to a model instead, which returns
+        the same four sections written as narrative. Nothing else in the pipeline changes.
+        The deterministic path stays as the fallback, so a provider outage, a rate limit or an
+        expired key degrades the wording and never the detection — and the demo needs no signup.
+        Richer analysis — correlating deploys, config changes and log excerpts — plugs in at this
+        same seam as the inputs become available.
       </div>
     </div>
   </div>
 
+  <!-- The live view. Four panels, all on screen at once, because they are four views of the same
+       event and the interesting part is how they line up in time: a breach lands in the timeline,
+       an incident absorbs it, the log says when, the draft explains it. Behind six tabs you could
+       only ever see one of the four, so the relationship between them — which is the entire
+       product — was the one thing the page could not show. The two reference essays stayed as
+       tabs, below, because those are read once and are not events. -->
+  <div class="livegrid">
+    <!-- Three counts, not one. A single total conflated "nothing is wrong" with "nothing has ever
+         happened", and hid the one number that matters during a cascade: how many are still open. -->
+    <section class="lg">
+      <h3>Incidents
+        <span class="lgcount" id="tb-inc" title="Every incident on record, open and closed">0</span>
+        <span class="lgcount open" id="tb-open" title="Still open — what a human is on the hook for">0 open</span>
+        <span class="lgcount done" id="tb-res" title="Resolved, by hand or by the auto-resolver after 4 quiet minutes">0 resolved</span>
+        <span class="lghint">what a human would be told</span></h3>
+      <div class="lgbody" id="incidents"><div class="empty">No incidents. Every service is meeting its targets.</div></div>
+    </section>
+
+    <section class="lg">
+      <h3>Activity log<span class="lghint">every change, newest first</span></h3>
+      <div class="lgbody" id="feed"><div class="empty">Watching…</div></div>
+    </section>
+
+    <section class="lg">
+      <h3>Breach timeline<span class="lghint" id="tl-when"></span></h3>
+      <div class="lgbody scroll" id="timeline">
+        <div class="empty">Nothing has broken yet. Break a service and every breach behind the incident lands here.</div>
+      </div>
+    </section>
+
+    <section class="lg">
+      <h3>Root cause<span class="lghint">drafted from the timeline, off the detection path</span></h3>
+      <div class="lgbody">
+        <pre class="rca" id="rca">No incident yet. Break a service and a root-cause hypothesis is drafted automatically.</pre>
+        <div class="caveat">
+          <b>A hypothesis, not a conclusion.</b> The drafter sees the incident, the dependency edges between
+          the affected services, and the breach timeline. No logs, no deploys, no config history. It is
+          told to use only that and to say so when it is not enough. With no <code>LLM_API_KEY</code> set,
+          <code>TemplateRcaDrafter</code> writes the same four sections deterministically, which is what
+          <code>make demo</code> shows and why it needs no signup.
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <details class="reference">
+    <summary>Reference — how it works, and why these choices</summary>
   <div class="tabs">
-    <button class="tab on" data-t="incidents">Incidents<span class="badge" id="tb-inc">0</span></button>
-    <button class="tab" data-t="timeline">Timeline</button>
-    <button class="tab" data-t="rca">Root Cause</button>
-    <button class="tab" data-t="feed">Activity</button>
-    <button class="tab" data-t="how">How It Works</button>
+    <button class="tab on" data-t="how">How It Works</button>
     <button class="tab" data-t="why">Why These Choices</button>
+    <button class="tab" data-t="promql">Look At The Raw Data</button>
   </div>
   <div class="tabbody">
-    <div data-p="incidents"><div id="incidents"><div class="empty">No incidents. The fleet is meeting its objectives.</div></div></div>
-
-    <div data-p="timeline" hidden>
-      <div class="meta" style="margin-bottom:12px">
-        Every breach attached to the incident, newest first. This is the raw material an RCA is drafted from.
-      </div>
-      <div class="scroll" id="timeline"><div class="empty">No open incident.</div></div>
-    </div>
-
-    <div data-p="rca" hidden>
-      <div class="meta" style="margin-bottom:12px">
-        Exactly what <code>GET /api/v1/incidents/{id}/rca</code> returns — read from the platform, not
-        composed in this page. Whether a model or the deterministic summariser wrote it is stated on
-        the draft itself.
-      </div>
-      <pre class="rca" id="rca">No open incident.</pre>
-      <div class="caveat">
-        <b>A hypothesis, not a conclusion.</b> The drafter sees the incident, the dependency edges between
-        the affected services, and the breach timeline — no logs, no deploys, no config history. It is
-        told to use only that and to say so when it is not enough. With no <code>LLM_API_KEY</code> set,
-        <code>TemplateRcaDrafter</code> writes the same four sections deterministically, which is what
-        <code>make demo</code> shows and why it needs no signup.
-      </div>
-    </div>
-
-    <div data-p="feed" hidden>
-      <div class="meta" style="margin-bottom:12px">Changes only — nothing is repeated while it stays the same.</div>
-      <div id="feed"><div class="empty">Watching…</div></div>
-    </div>
-
-    <div data-p="how" hidden>
+    <div data-p="how">
       <div class="flow">
         <span class="i">1</span>
-        <div><b>The fleet</b><div class="d">Eight services calling each other synchronously, so a failure at the bottom reaches the top.</div></div>
+        <div><b>The services</b><div class="d">Eight of them, calling each other synchronously, so a failure at the bottom reaches the top.</div></div>
         <span class="v" id="f-1">—</span>
 
         <span class="i">2</span>
@@ -737,7 +1679,7 @@
         <span class="v" id="f-2">—</span>
 
         <span class="i">3</span>
-        <div><b>Evaluator</b><div class="d">Every 15s asks: enough data to judge? is the burn rate over the line in <em>both</em> the long and short window? If it cannot see, it says so — it never guesses "broken".</div></div>
+        <div><b>Evaluator</b><div class="d">Every 15s asks: enough data to judge? is the burn rate over the line in <em>both</em> the long and short window? If it cannot see, it says so; it never guesses "broken".</div></div>
         <span class="v" id="f-3">—</span>
 
         <span class="i">4</span>
@@ -749,7 +1691,7 @@
         <span class="v" id="f-5">—</span>
 
         <span class="i">6</span>
-        <div><b>Root cause drafter</b><div class="d">A second consumer, on its own thread. Builds the timeline, sends it to a model, and stores the draft on the incident — or writes the deterministic summary when there is no model to reach. Detection never waits for it.</div></div>
+        <div><b>Root cause drafter</b><div class="d">A second consumer, on its own thread. Builds the timeline, sends it to a model, and stores the draft on the incident, or writes the deterministic summary when there is no model to reach. Detection never waits for it.</div></div>
         <span class="v" id="f-6">—</span>
       </div>
     </div>
@@ -759,77 +1701,235 @@
         The decisions that are not obvious from the diagram, and what each one is defending against.
         Most of these are bugs that were found and fixed rather than principles chosen up front.
       </div>
-      <div class="flow">
+      <!-- Two columns, not three. The third carried internal build-notes references that meant
+           nothing to a reader and pointed at a file nobody outside the project should be sent to. -->
+      <div class="flow two">
         <span class="i">1</span>
         <div><b>The correlation key is the origin, not the set of affected services</b>
-          <div class="d">Hashing the member set looks right and quietly breaks the demo: the set grows as the cascade spreads, so every new breach produces a different key and its own incident — four services, four incidents, exactly the storm this exists to collapse. The origin breaches first and stays first, so all four resolve to one key. It is <em>frozen at creation</em>: recomputed for display, never re-keyed.</div></div>
-        <span class="v">§7</span>
+          <div class="d">Hashing the member set looks right and quietly breaks the demo: the set grows as the cascade spreads, so every new breach produces a different key and its own incident: four services, four incidents, exactly the storm this exists to collapse. The origin breaches first and stays first, so all four resolve to one key. It is <em>frozen at creation</em>: recomputed for display, never re-keyed.</div></div>
 
         <span class="i">2</span>
         <div><b>The Redis dedupe mark is set after the commit, never before</b>
-          <div class="d">Marking first is faster and silently loses events: mark, commit fails, Kafka redelivers, the mark is found, the consumer logs DEBUG and returns — the breach is gone with no incident, no dead letter, and no counter to notice it by. Marking afterwards leaves only a duplicate-delivery window, which the partial unique index absorbs.</div></div>
-        <span class="v">§6</span>
+          <div class="d">Marking first is faster and silently loses events: mark, commit fails, Kafka redelivers, the mark is found, the consumer logs DEBUG and returns, and the breach is gone with no incident, no dead letter, and no counter to notice it by. Marking afterwards leaves only a duplicate-delivery window, which the partial unique index absorbs.</div></div>
 
         <span class="i">3</span>
         <div><b>Three dedupe layers, ordered rather than redundant</b>
           <div class="d">A deterministic v3 event id makes a redelivery <em>recognisable</em>; the Redis key skips the common case cheaply; the partial unique index on <code>correlation_key WHERE state &lt;&gt; 'RESOLVED'</code> catches the commit-to-mark race and concurrent consumers. Verified with 50 threads on one key, and with 10,000 replayed duplicates.</div></div>
-        <span class="v">§5.5</span>
 
         <span class="i">4</span>
         <div><b>Correlation walks the subgraph induced by breaching services only</b>
-          <div class="d">Over the full static graph the fleet is permanently one component, so any breach anywhere would collapse into a single incident and correlation would be doing no work at all. Inducing on the breached set is what makes <b>Break both paths</b> produce two incidents instead of one.</div></div>
-        <span class="v">§7</span>
+          <div class="d">Over the full static graph all eight are permanently one component, so any breach anywhere would collapse into a single incident and correlation would be doing no work at all. Inducing on the breached set is what makes <b>Break both paths</b> produce two incidents instead of one.</div></div>
 
         <span class="i">5</span>
         <div><b>Burn rate is precomputed in Prometheus</b>
-          <div class="d">A cycle is about six instant queries whatever the fleet size, because the recording rules aggregate <code>by (service)</code> and one query returns every service as a vector. Querying per SLO per window would be 4000 queries a cycle at 1000 services, and Prometheus rather than Sentinel would be the story.</div></div>
-        <span class="v">§5.3</span>
+          <div class="d">A cycle is about six instant queries however many services there are, because the recording rules aggregate <code>by (service)</code> and one query returns every service as a vector. Querying per SLO per window would be 4000 queries a cycle at 1000 services, and Prometheus rather than Sentinel would be the story.</div></div>
 
         <span class="i">6</span>
         <div><b>The LLM is optional, and the fallback is a feature</b>
           <div class="d">Required-and-degraded would mean the observability platform depends on a third party's uptime <em>in order to explain outages</em>. With no key the deterministic drafter is wired at startup; with a key and a failing provider, retry and a circuit breaker run and then the same summary is written. Either way the incident is explained, and the response says which wrote it.</div></div>
-        <span class="v">§8</span>
 
         <span class="i">7</span>
         <div><b>The RCA is written by a targeted UPDATE, not through the entity</b>
-          <div class="d">Rewriting the whole row dragged the draft into the <code>@Version</code> contention that protects the affected-services set — acknowledging an incident while the drafter finished threw a stale-object exception and returned 500, over columns that cannot conflict. The conditional update also makes draft-once atomic.</div></div>
-        <span class="v">found in test</span>
+          <div class="d">Rewriting the whole row dragged the draft into the <code>@Version</code> contention that protects the affected-services set. Acknowledging an incident while the drafter finished threw a stale-object exception and returned 500, over columns that cannot conflict. The conditional update also makes draft-once atomic.</div></div>
 
         <span class="i">8</span>
         <div><b>An LLM failure does not dead-letter</b>
           <div class="d">Retries are exhausted, the deterministic summary is written, the message is acked. Dead-lettering would leave the incident with no root cause at all, which is strictly worse than one with a plain timeline. The DLT is for messages that need a human.</div></div>
-        <span class="v">§8</span>
 
         <span class="i">9</span>
         <div><b>Sharding was built on day one and is still switched off</b>
-          <div class="d"><code>ShardAssignment</code> is ten lines and makes horizontal scaling a config change. Naive replicas would each evaluate every SLO and triple-count the burn rate. It runs at <code>0/1</code> because the measured ceiling has not been reached — naming your own ceiling is the honest version of this answer.</div></div>
-        <span class="v">§5.4</span>
+          <div class="d"><code>ShardAssignment</code> is ten lines and makes horizontal scaling a config change. Naive replicas would each evaluate every SLO and triple-count the burn rate. It runs at <code>0/1</code> because the measured ceiling has not been reached, and naming your own ceiling is the honest version of this answer.</div></div>
 
         <span class="i">10</span>
         <div><b>The demo runs compressed SLO windows</b>
-          <div class="d">Production defaults are 1h/6h/3d; this profile uses 2m/1m. On production windows the first CRITICAL lands around three minutes in, and on a freshly started stack <code>rate()</code> has seconds of history so the burn rate spikes for the wrong reason — the demo would work cold and degrade as it ran. Declared here rather than found later.</div></div>
-        <span class="v">§16</span>
+          <div class="d">Production defaults are 1h/6h/3d; this profile uses 2m/1m. On production windows the first CRITICAL lands around three minutes in, and on a freshly started stack <code>rate()</code> has seconds of history so the burn rate spikes for the wrong reason, so the demo would work cold and degrade as it ran. Declared here rather than found later.</div></div>
+      </div>
+    </div>
+
+    <!-- Every link carries its expression in the URL, so the tab opens on a drawn graph rather
+         than on Prometheus's empty console. Nobody should need to know PromQL to see the point,
+         and "here is the query, here is the result" is a far better argument than a screenshot. -->
+    <div data-p="promql" hidden>
+      <div class="meta" style="margin-bottom:14px">
+        Prometheus has no dashboards — it is a query console, and it opens blank on purpose. These
+        open it with the query already run. Everything on the two Grafana dashboards is one of
+        these underneath.
+      </div>
+      <div class="qlist" id="qlist"></div>
+      <div class="caveat" style="margin-top:14px">
+        <b>Check the first one before you trust any of the others.</b> If request rate is flat at
+        zero the baseline load generator has stopped, <code>rate()</code> has nothing to average,
+        and every burn rate on this page and both dashboards is meaningless rather than healthy.
       </div>
     </div>
   </div>
+  </details>
 
   <p class="hint" style="margin-top:18px">
     Running the <code>demo</code> profile: SLO windows are compressed to 2m/1m so a cascade is visible
-    in two minutes. Production defaults are 1h/6h/3d — see the <b>Why These Choices</b> tab.
+    in two minutes. Production defaults are 1h/6h/3d; see <b>Why These Choices</b> under Reference.
   </p>
 </div>
 
 <script>
 const POLL_MS = 2000;
-const SETTLE_MS = 90_000;
+/* No SETTLE_MS. The wait used to be a fixed 90s countdown that consulted nothing, which was wrong
+   in both directions: on a warm stack it invented a wait for errors that had aged out long before,
+   and on a slow cold start it could release you while they were still there. The gate is now
+   GET /api/v1/demo/readiness, which reports each service's real error rate over the burn window. */
 
 const el = (id) => document.getElementById(id);
 const clock = () => new Date().toLocaleTimeString([], { hour12:false });
 
+/* Incident age. Without it the ~24 rows DemoDataSeeder backfills across the previous 30 days look
+   exactly like something that just happened, and the list reads as "this demo has already run 25
+   times" the first time anyone opens it. */
+function ago(iso) {
+  if (!iso) return '';
+  const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
+  if (s < 90) return 'just now';
+  if (s < 5400) return `${Math.round(s / 60)}m ago`;
+  if (s < 172800) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
 // chaosOn distinguishes "failing" from "recovering": the same zero-incident state means something
 // completely different before a break and just after a reset.
-let seeded = false, settleUntil = 0, brokeAt = 0, resetAt = 0, chaosOn = false;
+let seeded = false, brokeAt = 0, resetAt = 0, chaosOn = false;
+
+/* Last readiness payload. null means the endpoint is unavailable (not the demo profile), in which
+   case the gate opens rather than blocking on something that will never answer. */
+let readiness = null;
+const gateOpen = () => !readiness || readiness.ready;
+
+/* Step 1 is finished when every objective it creates exists — one availability and one latency per
+   service — not merely when one does. seed() swallows per-objective failures, so "some exist" and
+   "the seeding worked" are different questions and only the second one may switch the button off. */
+const seedComplete = () => sloCount >= fleetCount * 2;
+
+const ICON_PLAY = 'M5 3.4v9.2a.8.8 0 0 0 1.22.68l7.2-4.6a.8.8 0 0 0 0-1.36l-7.2-4.6A.8.8 0 0 0 5 3.4Z';
+const ICON_TICK = 'M6.2 12.7 2.3 8.8l1.35-1.35L6.2 10 12.35 3.85 13.7 5.2Z';
+
+/* What each service stands in for. The names are generic on purpose so the topology reads as any
+   ordering system, but "cart-service" alone does not say why breaking ledger-service is the
+   interesting one, and the dependency arrows only show that it is deepest, not why that matters. */
+const ROLE = {
+  'api-gateway':      'Front door. Every customer request enters here.',
+  'checkout-service': 'Places the order. Calls the cart and the payment service.',
+  'cart-service':     'Holds the basket and its line items.',
+  'payment-service':  'Takes the money. Calls fraud checks, then the ledger.',
+  'fraud-service':    'Scores the transaction before it is charged.',
+  'ledger-service':   'Records the money movement. Depends on nothing, so nothing else explains its failure.',
+  'search-service':   'Entry point for browsing. Nothing on the order path touches it.',
+  'catalog-service':  'Product data behind search. Also depends on nothing.',
+};
+
+/* The five states a service can be in, named the way a status page names them. Each carries its own
+   definition so the precise meaning is one hover away from the badge itself rather than in a legend
+   somewhere else on the page. Used by the roster and by the colour key, from this one place, so the
+   two can never drift into describing the same colour differently. */
+const STATUS = {
+  healthy:  { label:'Healthy',    key:'ok',
+              tip:'Inside its error budget — failing less often than its target allows.' },
+  degraded: { label:'Degraded',   key:'warn',
+              tip:'Some requests are failing, but not enough for long enough to raise an incident.' },
+  failing:  { label:'Failing',    key:'crit',
+              tip:'Over its error budget and part of an open incident.' },
+  cause:    { label:'Root cause', key:'origin',
+              tip:'Failed first, and everything else that is failing depends on it. This is the one to fix.' },
+  down:     { label:'Down',       key:'dead',
+              tip:'Not answering health checks at all.' },
+};
+
+const STATUS_COLOUR = { ok:'var(--ok)', warn:'var(--warn)', crit:'var(--crit)', origin:'var(--origin)', dead:'var(--faint)' };
+
+/* ---------- the raw data, one click away ----------
+   Prometheus 2.x reads the expression off the query string: g0.expr, g0.tab (0 = table, 1 = graph)
+   and g0.range_input. So a link can hand someone a drawn graph instead of an empty console.
+   `why` is the part that matters — a query with no explanation is just as opaque as a blank box. */
+const PROM = 'http://localhost:9090';
+const promLink = (expr, tab, range) =>
+  `${PROM}/graph?g0.expr=${encodeURIComponent(expr)}&g0.tab=${tab}&g0.range_input=${range || '30m'}`;
+
+const QUERIES = [
+  { name:'Is traffic flowing at all?', tab:1,
+    expr:'sum by (service) (rate(http_server_requests_seconds_count[2m]))',
+    why:'Check this first, always. Around 30 requests a second across the eight services. Flat at zero means the load generator has died and nothing else on this page means anything.' },
+  { name:'Burn rate per service', tab:1,
+    expr:'slo:error_ratio:2m / 0.001',
+    why:'The error ratio divided by the 0.1% error budget. This is the number the whole project turns on: 1 is MEDIUM, 6 is HIGH, 14.4 is CRITICAL. Break something and watch it climb.' },
+  { name:'Error ratio, straight from the recording rule', tab:1,
+    expr:'slo:error_ratio:2m',
+    why:'What the evaluator actually reads. One instant query returns every service as a vector, which is why a cycle costs the same at 8 services as at 800.' },
+  { name:'The same thing, computed the expensive way', tab:1,
+    expr:'sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[2m])) / sum by (service) (rate(http_server_requests_seconds_count[2m]))',
+    why:'Identical line to the one above — but computed at query time instead of precomputed. Run both and compare. That equivalence is the entire argument for recording rules, in ten seconds.' },
+  { name:'Guard series: enough requests to judge?', tab:0,
+    expr:'slo:requests:2m',
+    why:'Below the minimum-events floor the evaluator returns InsufficientData rather than a breach. A ratio alone cannot tell "healthy" apart from "no traffic", so this is queried alongside every ratio.' },
+  { name:'Guard series: is the window populated?', tab:0,
+    expr:'slo:samples:2m',
+    why:'How much of the window actually has data. A service that started ten seconds ago cannot be judged over two minutes, and this is what stops it being called broken.' },
+  { name:'Evaluator cycle p99 against its 15s budget', tab:1,
+    expr:'histogram_quantile(0.99, sum by (le) (rate(sentinel_slo_cycle_duration_seconds_bucket[5m])))',
+    why:'The scaling metric. When this approaches 15 seconds the evaluator can no longer keep up and the fix is sharding by service hash. Currently it sits in the tens of milliseconds.' },
+  { name:'Are all nine scrape targets up?', tab:0,
+    expr:'up',
+    why:'Eight fleet services plus Sentinel itself — it is both the consumer of these metrics and a subject of them. Any zero here explains a dashboard that has gone quiet.' },
+];
+
+el('qlist').innerHTML = QUERIES.map((q) => `
+  <a class="qrow" href="${promLink(q.expr, q.tab, q.range)}" target="_blank" rel="noreferrer">
+    <span class="qtop"><span class="qname">${q.name}</span><span class="qgo">open in Prometheus →</span></span>
+    <code class="qexpr">${q.expr.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</code>
+    <span class="qwhy">${q.why}</span>
+  </a>`).join('');
+
+/* The two trees, in the order `layout` returns them. Named here rather than inline so the reason
+   each one exists is written down: the browse path is not filler, it is the control group. */
+const PATHS = [
+  { name:'Order path',  cls:'',
+    note:'break the last one and the failure climbs all the way to the front door' },
+  { name:'Browse path', cls:'browse',
+    note:'nothing connects it to the order path, so a failure here must stay a separate incident' },
+];
+
+/* The key, written once from STATUS. Down keeps its id and its hidden flag: it is the one entry
+   that is not a colour but an absence of response, and it only means anything while something is
+   actually unreachable. */
+el('colour-key').innerHTML =
+  '<span class="khead">WHAT THE STATUS COLUMN MEANS</span>'
+  + ['healthy', 'degraded', 'failing', 'cause'].map((k) => keyRow(STATUS[k])).join('')
+  + keyRow(STATUS.down, 'id="down-warn" hidden')
+  + `<span class="kfoot"><b>Error budget</b> — a 99.9% target means you are allowed to fail 0.1% of
+     requests. That 0.1% is the budget. Spending it faster than the target allows is what turns
+     <b>Degraded</b> into <b>Failing</b>; spending it slowly is fine and expected.</span>`;
+
+function keyRow(s, attrs = '') {
+  return `<span class="keyrow" ${attrs}>
+      <i style="background:${STATUS_COLOUR[s.key]}"></i>
+      <span class="kterm">${s.label}</span>
+      <span class="kdesc">${s.tip}</span>
+    </span>`;
+}
+
+/* Where the walkthrough thinks you are, as against where the system actually is. The two are kept
+   apart deliberately: the narrator always describes reality, while the rail only moves when you
+   move it. If reality runs ahead, Next arms and starts pulsing, which is the cue to catch up. */
+let currentStep = 1, actualStep = 1;
+
+/* `justSeeded` used to live here, distinguishing a seed you performed from a stack you arrived at,
+   so the settle timer knew whether open incidents were start-up noise. The readiness gate answers
+   that from the data instead, so the flag had nothing left to decide. */
 let openCount = 0, resolvedCount = 0, allDown = false;
+/* How many objectives exist against how many the fleet needs. Owned by tick, read by
+   refreshButtons, so the Start demo button is decided by what the server holds rather than by
+   whether this browser session happened to be the one that pressed it. */
+let sloCount = 0, fleetCount = 8;
+
+/* What the ribbon falls back to when this page did not start the run: timings rebuilt from the
+   subject incident itself, so a reload does not erase the detection-latency story. */
+let replay = null;
 const seen = { state:{}, services:{}, severity:{}, num:{} };
 let nextNum = 1, firstRender = true;
 
@@ -841,6 +1941,8 @@ const stamps = { chaos:0, breach:0, incident:0, rca:0 };
    stage — an unreachable Sentinel means something very different when you just killed it. */
 let killedAt = 0, incidentsBeforeKill = null, killVerdict = '';
 
+/* Holding now only stops polling. There is no deadline left to keep honest: the gate is measured
+   rather than counted down, so a held screen simply shows the last reading until you resume. */
 let frozen = false;
 
 /* The incident the RCA card is currently showing, so Regenerate knows what to redraft. */
@@ -858,48 +1960,74 @@ document.querySelectorAll('.tab').forEach((t) => {
    One stage at a time, each with a concrete NOW and a WHY that explains the mechanism rather than
    restating the NOW. This is the part that turns a wall of panels into something followable. */
 function narrate(data) {
-  const n = el('narr');
-  n.className = 'narrator ' + (data.tone || '');
+  // The tone belongs to the whole deck, not to the paragraph. Colouring only the prose left the
+  // buttons that change the state looking the same in a crisis as in a healthy fleet.
+  el('deck').className = 'deck ' + (data.tone || '');
   el('n-title').textContent = data.title;
   el('n-now').innerHTML = data.now;
   el('n-why').innerHTML = data.why;
 
+  // Reality, recorded but not acted on. The rail follows currentStep instead, so the walkthrough
+  // only advances when you press Next.
+  actualStep = data.step;
+  renderRail();
+}
+
+/* Exactly one step is ever highlighted: the one you are on. Steps behind you are ticked off, steps
+   ahead are plain. Whether reality has run ahead is the Next button's job to say, not the rail's —
+   showing it here meant a step you had not reached yet lit up as though you were already on it. */
+function renderRail() {
   [1, 2, 3, 4].forEach((i) => {
     const s = el('st-' + i);
-    s.classList.toggle('on', i === data.step);
-    s.classList.toggle('done', i < data.step);
+    s.classList.toggle('on', i === currentStep);
+    s.classList.toggle('done', i < currentStep);
   });
+
+  const armed = actualStep > currentStep && currentStep < 4;
+  const btn = el('b-next');
+  btn.disabled = !armed;
+  btn.classList.toggle('armed', armed);
+  el('next-hint').textContent = armed
+    ? `Step ${currentStep} is complete.`
+    : currentStep >= 4 ? 'Last step.' : `Waiting for step ${currentStep} to finish.`;
 }
+
+el('b-next').onclick = () => {
+  if (currentStep < 4) currentStep++;
+  renderRail();
+};
 
 function stageFor(ctx) {
   if (ctx.allDown) return {
-    step:1, tone:'crit', title:'Cannot reach the fleet',
-    now:'Sentinel is up but no fleet service is responding.',
-    why:'The stack is probably still starting. If this persists, check <code>docker compose ps</code> — the fleet containers must be healthy before anything can be measured.',
+    step:1, tone:'crit', title:'Cannot reach the services',
+    now:'Sentinel is up but none of the eight services is responding.',
+    why:'The stack is probably still starting. If this persists, check <code>docker compose ps</code>; the service containers must be healthy before anything can be measured.',
   };
 
   if (!seeded) return {
-    step:1, tone:'', title:'Nothing is being measured yet',
-    now:'Eight services are running and healthy. No objectives are defined, so Sentinel has nothing to judge them against.',
-    why:'An SLO is a promise — "99.9% of requests succeed", "99% finish inside 500ms". Without one there is no error budget, no burn rate and nothing to breach. <b>Start demo</b> creates one availability and one latency objective for each service.',
+    step:1, tone:'', title:'No reliability targets set yet',
+    now:'All eight services are up and serving traffic. <code>api-gateway</code> calls <code>checkout</code>, which calls <code>cart</code> and <code>payment</code>, and <code>payment</code> depends on <code>fraud</code> and <code>ledger</code> beneath it. <code>search</code> and <code>catalog</code> handle browsing on a separate path. None of them has a target to hit, so there is nothing to measure against and nothing that can count as failing.',
+    why:'A reliability target, normally called an <b>SLO</b>, is just a number you commit to: <em>99.9% of checkout requests succeed</em>, or <em>99% of catalog reads finish under 500ms</em>. The 0.1% you allow yourself to fail is the <b>error budget</b>. Without a target there is no budget, and "checkout feels slow" stays an opinion instead of something you can measure and alert on. <b>Start demo</b> creates two targets per service, one for failures and one for speed, sixteen in total.',
   };
 
-  if (settleRemaining() > 0 || (openCount > 0 && !chaosOn && !resetAt)) return {
-    step:1, tone:'warn', title:'Letting the start-up noise clear',
-    now:`Objectives created. Waiting <b>${settleRemaining()}s</b> before anything can be broken.`,
-    why:'The services threw genuine 5xx while booting, because each was calling downstreams that were not up yet. Those errors are still inside the 2-minute evaluation window. Breaking now would mix start-up noise with injected failure — measured, that gave <b>3 incidents naming the wrong origin</b>, where waiting gave <b>1 incident with the right one</b>.',
+  // Gated on the readiness reading, not on whether this session did the seeding: what matters is
+  // whether errors are actually in the window, which is a fact rather than an inference.
+  if (seeded && !chaosOn && !resetAt && readiness && !readiness.ready) return {
+    step:1, tone:'warn', title:'Targets set, waiting for start-up errors to clear',
+    now:`All sixteen targets are live and re-checked every 15 seconds. <b>${readiness.clear} of ${readiness.total}</b> services are clean; breaking something stays locked until the rest are, and the figures below are their live error rates.`,
+    why:'The services take time to boot and come up in no fixed order, so <code>checkout</code> was already accepting requests while <code>payment</code> was still starting. It returned real server errors (500s) for a few seconds, and those count against the target exactly like any other failure. Sentinel only looks at the last couple of minutes of traffic, so they are still in view. Break something now and the two cannot be separated: Sentinel blames whichever service failed <em>first</em>, and one still carrying start-up errors wins that race against the one you actually broke. Measured here: breaking too early gave <b>3 incidents blaming the wrong service</b>, waiting gave <b>1 blaming the right one</b>.',
   };
 
   if (!chaosOn && !resetAt) return {
     step:2, tone:'ok', title:'Healthy, and being watched',
     now:'Every service is inside its error budget. The evaluator has run a full cycle and found nothing wrong.',
-    why:'Each cycle asks three questions per objective: is there <em>enough data</em> to judge? is the burn rate over the threshold in the <em>long</em> window? and in the <em>short</em> window too? Both must be true — the long window proves the problem is sustained, the short one proves it is still happening. <b>Break order path</b> injects 35% errors and +600ms into <code>ledger-service</code>, the deepest service in the chain.',
+    why:'Each cycle asks three questions per objective: is there <em>enough data</em> to judge? is the burn rate over the threshold in the <em>long</em> window? and in the <em>short</em> window too? Both must be true: the long window proves the problem is sustained, the short one proves it is still happening. <b>Break order path</b> injects 35% errors and +600ms into <code>ledger-service</code>, the deepest service in the chain.',
   };
 
   if (openCount === 0 && chaosOn) {
     const secs = Math.round((Date.now() - brokeAt) / 1000);
     return {
-      step:3, tone:'warn', title:'Failing — not yet detected',
+      step:3, tone:'warn', title:'Failing, not yet detected',
       now:`<code>ledger-service</code> has been returning errors for <b>${secs}s</b>. No incident has been raised.`,
       why:'This gap is the metrics pipeline, not the evaluator. Prometheus scrapes every 15s and the burn rate is computed over a rolling window, so the error rate has to <em>accumulate</em> before it crosses 14.4× the budget. Detecting faster would mean shorter windows, which means alerting on every transient blip. Typically 25–45s here.',
     };
@@ -908,7 +2036,7 @@ function stageFor(ctx) {
   if (!chaosOn && resetAt && openCount > 0) return {
     step:4, tone:'warn', title:'Recovering',
     now:`Failure injection cleared. <b>${openCount}</b> incident(s) still open.`,
-    why:'The errors are still inside the trailing windows, so breaches keep firing for a few minutes after the services are actually healthy. Only once they stop does the quiet period start counting — and after 4 minutes of silence the incident auto-resolves without anyone touching it.',
+    why:'The errors are still inside the trailing windows, so breaches keep firing for a few minutes after the services are actually healthy. Only once they stop does the quiet period start counting, and after 4 minutes of silence the incident auto-resolves without anyone touching it.',
   };
 
   if (openCount === 0 && !chaosOn) return {
@@ -922,7 +2050,7 @@ function stageFor(ctx) {
     return {
       step:3, tone:'crit', title:'One incident, not ' + i.affectedServices.length,
       now:`<b>${i.affectedServices.length} services</b> are breaching and <b>${i.breachCount} raw breaches</b> have been absorbed into a single incident. The origin is <code>${i.originService}</code>.`,
-      why:`All ${i.affectedServices.length} are connected in the dependency graph, so this is one failure with a blast radius — not ${i.affectedServices.length} independent problems. The origin is inferred from which service breached <em>first</em>; when several breach in the same cycle the tie goes to the one <em>deepest</em> in the call chain, because a dependency failing explains its callers failing far more often than the reverse.`,
+      why:`All ${i.affectedServices.length} are connected in the dependency graph, so this is one failure with a blast radius, not ${i.affectedServices.length} independent problems. The origin is inferred from which service breached <em>first</em>; when several breach in the same cycle the tie goes to the one <em>deepest</em> in the call chain, because a dependency failing explains its callers failing far more often than the reverse.`,
     };
   }
 
@@ -937,24 +2065,86 @@ function stageFor(ctx) {
   const parts = live.map((x) => `<code>${x.originService}</code> (${x.affectedServices.length})`).join(' and ');
 
   if (separateTrees) return {
-    step:3, tone:'crit', title:`${openCount} incidents — kept apart on purpose`,
+    step:3, tone:'crit', title:`${openCount} incidents, kept apart on purpose`,
     now:`Two unrelated failures: ${parts}. Sentinel did <em>not</em> merge them.`,
-    why:'This is the half of the proof a single cascade cannot show. The breaching services form two groups with <em>no dependency edge</em> between them, so they stay two incidents. A system that simply grouped everything broken at the same moment would report one incident spanning the whole fleet — a confident and useless answer.',
+    why:'This is the half of the proof a single cascade cannot show. The breaching services form two groups with <em>no dependency edge</em> between them, so they stay two incidents. A system that simply grouped everything broken at the same moment would report one incident spanning the whole fleet, which is a confident and useless answer.',
   };
 
   const main = live.reduce((a, b) => (b.affectedServices.length > a.affectedServices.length ? b : a));
   const extra = live.filter((x) => x !== main);
   return {
     step:3, tone:'warn', title:'One real incident, plus a stray',
-    now:`The failure is <code>${main.originService}</code> with <b>${main.affectedServices.length} services</b>. Alongside it: ${extra.map((x) => `<code>${x.originService}</code>`).join(', ')} — same tree, ${extra.map((x) => x.affectedServices.length).join('/')} service(s).`,
-    why:'A cascade does not trip every service in the same 15s cycle. If a service breaches in a cycle where none of its neighbours has yet, it is genuinely alone at that moment and correctly opens its own incident — and the correlation key is frozen at creation, so it cannot later be folded in. The stray stops receiving breaches and <b>auto-resolves after 4 minutes</b>, leaving the real one. Collapsing them at the moment they connect would need live incident merging, which is deliberately out of scope.',
+    now:`The failure is <code>${main.originService}</code> with <b>${main.affectedServices.length} services</b>. Alongside it: ${extra.map((x) => `<code>${x.originService}</code>`).join(', ')}, same tree, ${extra.map((x) => x.affectedServices.length).join('/')} service(s).`,
+    why:'A cascade does not trip every service in the same 15s cycle. If a service breaches in a cycle where none of its neighbours has yet, it is genuinely alone at that moment and correctly opens its own incident, and the correlation key is frozen at creation, so it cannot later be folded in. The stray stops receiving breaches and <b>auto-resolves after 4 minutes</b>, leaving the real one. Collapsing them at the moment they connect would need live incident merging, which is deliberately out of scope.',
   };
 }
 
 /* ---------- controls ---------- */
 function showError(t) { const b = el('ctl-err'); b.textContent = t; b.hidden = false; }
 function setMsg(t) { el('ctl-msg').textContent = t; }
-function settleRemaining() { return Math.max(0, Math.ceil((settleUntil - Date.now()) / 1000)); }
+/* Shown only while the gate is closed, and it IS the gate: the same payload that decides whether
+   Break is clickable is the one rendered here, so the screen cannot claim a state the buttons
+   disagree with. Hidden once every service reads clean, because a panel of eight green rows that
+   never changes again is just furniture. */
+function renderReadiness() {
+  const box = el('ready');
+  if (!seeded || !readiness || chaosOn || resetAt) { box.hidden = true; return; }
+
+  // Stays up once everything is clear rather than vanishing. On a warm stack the gate opens on the
+  // very first poll, so hiding it on success meant the one screen explaining what was checked
+  // flashed past in under two seconds, and Step 1 looked like it did nothing at all. Left visible,
+  // it doubles as the pre-break baseline: eight services, all green, nothing wrong yet.
+  const done = readiness.ready;
+  box.hidden = false;
+  box.classList.toggle('done', done);
+  el('ready-count').textContent = `${readiness.clear} of ${readiness.total}`;
+  el('ready-label').textContent = done
+    ? `services clear. Nothing is failing in the last ${readiness.window} of traffic, so breaking one now shows only what you broke.`
+    : `services clear of start-up errors, measured over the last ${readiness.window} of traffic`;
+}
+
+/* The roster. One row per service: what it stands in for, how many of its requests are currently
+   failing, and where that leaves it. The percentage is the same number the gate and the burn rate
+   are computed from, so the column is labelled rather than left to be guessed at. */
+function renderRoster(order, breaching, origins, down) {
+  const byName = {};
+  (readiness ? readiness.services : []).forEach((s) => { byName[s.name] = s; });
+  const win = readiness ? readiness.window : '';
+  el('roster-window').textContent = win ? `error rate over the last ${win} of traffic` : '';
+
+  // "Error rate", not "Failing": the column is a number and one of the statuses beside it is now
+  // the word Failing, and a header that reads as a status is a header nobody trusts.
+  el('roster').innerHTML = `
+    <div class="rrow head">
+      <span>Service</span><span>What it stands in for</span>
+      <span title="Share of its requests that returned a server error, over the window above.">Error rate</span><span class="rs">Status</span>
+    </div>` + order.map((name) => {
+    const s = byName[name];
+    const pct = s && s.errorRatio != null ? s.errorRatio * 100 : null;
+    const isOrigin = origins.has(name);
+    const isBreach = breaching.has(name);
+    const isDown = down.has(name);
+
+    /* Plain operational English, not SLO jargon. "On target", "Breaching" and "Origin" are precise
+       and completely opaque to anyone who has not read the SRE workbook — and this page exists for
+       people who have not. Healthy / Degraded / Failing / Root cause / Down is the vocabulary every
+       status page and on-call rotation already uses, and it means the same thing here.
+       The tooltip carries the exact definition for anyone who wants it. */
+    let cls = '';
+    let status = STATUS.healthy;
+    if (isDown) { cls = 'dead bad'; status = STATUS.down; }
+    else if (isOrigin) { cls = 'origin'; status = STATUS.cause; }
+    else if (isBreach) { cls = 'bad'; status = STATUS.failing; }
+    else if (s && !s.clear) { cls = 'warn'; status = STATUS.degraded; }
+
+    return `<div class="rrow ${cls}">
+        <span class="rn"><i></i>${name}</span>
+        <span class="rd">${ROLE[name] || ''}</span>
+        <span class="rp">${pct == null ? 'no data' : pct.toFixed(2) + '%'}</span>
+        <span class="rs" title="${status.tip}">${status.label}</span>
+      </div>`;
+  }).join('');
+}
 
 /* Every /api/v1 call needs the static API key. The Compose stack ships with the development
    default; a deployment that sets SENTINEL_API_KEY opens this page as ?key=<the-key>, which is
@@ -969,14 +2159,44 @@ function apiFetch(path, options = {}) {
   return fetch(path, { ...options, headers: { ...(options.headers || {}), 'X-Api-Key': API_KEY } });
 }
 
-async function action(button, path, describe) {
+/* An action owns the buttons for as long as it is in flight. refreshButtons now runs on every poll
+   as well as after every press, and without this a poll landing mid-request would re-enable the
+   button the request had just disabled — which is a double-press waiting to happen. */
+let busy = false;
+
+/* Every control that acts on the system. While one of them is running, all of them are off and the
+   one you pressed says what it is doing. Leaving the others live during a request was the flow
+   breaking in the most literal way: nothing on screen changed for a second or two, so the natural
+   response was to press something else, and now two chaos injections are racing each other. */
+const ACTION_BTNS = ['b-seed', 'b-cascade', 'b-both', 'b-kill', 'b-clear', 'b-reset'];
+let runningBtn = null, runningHtml = null;
+
+function enterBusy(button, label) {
+  ACTION_BTNS.forEach((id) => { el(id).disabled = true; });
+  runningBtn = button;
+  runningHtml = button.innerHTML;   // restored verbatim, so the icon and label come back untouched
+  button.classList.add('running');
+  button.innerHTML = `<span class="spin" aria-hidden="true"></span>${label}`;
+  syncRail();
+}
+
+function leaveBusy() {
+  if (runningBtn) {
+    runningBtn.innerHTML = runningHtml;
+    runningBtn.classList.remove('running');
+  }
+  runningBtn = runningHtml = null;
+}
+
+async function action(button, path, describe, running) {
   el('ctl-err').hidden = true;
-  button.disabled = true;
+  busy = true;
+  enterBusy(button, running || describe + '…');
   setMsg(describe + '…');
   try {
     const r = await apiFetch(path, { method:'POST' });
     const body = await r.json().catch(() => null);
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}${body ? ' — ' + JSON.stringify(body) : ''}`);
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}${body ? ': ' + JSON.stringify(body) : ''}`);
     if (body && body.ok === false) showError(`${body.message}\n${(body.details || []).join('\n')}`);
     else setMsg(body?.message || 'done');
     return body;
@@ -988,48 +2208,215 @@ async function action(button, path, describe) {
       `http://localhost:3000/?key=$SENTINEL_API_KEY`);
     return null;
   } finally {
+    busy = false;
+    leaveBusy();
     refreshButtons();
   }
 }
 
 function refreshButtons() {
-  el('b-seed').disabled = false;
+  if (busy) return;
+
+  /* A killed Sentinel is not accepting anything. Until it is back, every control stays off rather
+     than looking live and failing on press — the kill beat is meant to show the system surviving,
+     and a screenful of connection errors is not that. */
+  if (killedAt) {
+    ACTION_BTNS.forEach((id) => { el(id).disabled = true; });
+    renderNextUp();
+    syncRail();
+    return;
+  }
+
+  /* Start demo switches itself off once every objective it creates exists. It was enabled forever
+     on the grounds that seeding is idempotent — true, and beside the point: it is the loudest
+     control on the page, sitting first and in primary blue, and from step 2 onward pressing it
+     achieves precisely nothing. A live-looking button with no effect is worse than no button.
+
+     The test is completeness, not existence. `seeded` only asks whether ANY objective is present,
+     and seed() catches per-objective failures, so a run that created fifteen of sixteen would
+     satisfy `seeded`, disable the button, and leave no way to finish the job from the page. One
+     availability and one latency objective per service is the number that means done.
+
+     It re-arms on its own if the targets go away — the count comes from the server every poll, so
+     deleting an SLO through the API brings the button straight back. */
+  const seedDone = seedComplete();
+  el('b-seed').disabled = seedDone;
+  el('b-seed').classList.toggle('done', seedDone);
+  el('b-seed-t').textContent = seedDone ? `Targets set · ${sloCount}` : 'Start demo';
+  el('b-seed-i').setAttribute('d', seedDone ? ICON_TICK : ICON_PLAY);
   el('b-reset').disabled = !seeded;
-  const blocked = !seeded || settleRemaining() > 0 || (openCount > 0 && !chaosOn && !resetAt);
+  const blocked = !seeded || (!chaosOn && !resetAt && !gateOpen());
   el('b-cascade').disabled = blocked;
   el('b-both').disabled = blocked;
-  el('b-seed').classList.toggle('go', !seeded);
-  el('b-cascade').classList.toggle('go', seeded && !blocked && !chaosOn);
+  // .suggest, not .go: emphasis must not repaint a button whose colour is its meaning. See the
+  // stylesheet — the previous pairing produced a blue button with red text.
+  // Keyed on completeness, so a half-finished seed keeps asking to be pressed instead of going
+  // quiet the moment the first objective lands.
+  el('b-seed').classList.toggle('suggest', !seedDone);
+  el('b-cascade').classList.toggle('suggest', seeded && !blocked && !chaosOn);
   // Killing is only interesting once there is state worth losing. With nothing open it proves
   // that the process restarts, which nobody doubted.
   el('b-kill').disabled = openCount === 0 || killedAt > 0;
-  if (blocked && seeded && settleRemaining() > 0) setMsg(`${settleRemaining()}s until the window is clear`);
+  renderReadiness();
+  renderNextUp();
+  syncRail();
 }
 
+/* The one line on the page whose only job is to answer "what do I do now".
+   Two rules it must never break: it names a button by the exact label printed on that button, and
+   when the answer is genuinely "nothing", it says so and says what is being waited on instead. A
+   blank here is how the page came to look stuck in the first place. */
+function renderNextUp() {
+  const line = el('ctl-next');
+  let tone = '';       // '' = a button to press, wait = the clock, calm = nothing pending
+  let label = 'Next';
+  let text;
+
+  if (killedAt) {
+    tone = 'wait'; label = 'Wait';
+    text = 'Sentinel is being restarted by Docker. Nothing to press — the incident count must come back unchanged.';
+  } else if (allDown) {
+    tone = 'wait'; label = 'Wait';
+    text = 'The services are still starting. The demo cannot measure anything until they answer.';
+  } else if (!seedComplete()) {
+    text = seeded
+      ? `Press <b>Start demo</b> again — only <b>${sloCount}</b> of ${fleetCount * 2} targets exist, so some services still cannot pass or fail.`
+      : 'Press <b>Start demo</b> to give all eight services a reliability target. Nothing can pass or fail until they have one.';
+  } else if (!chaosOn && !resetAt && !gateOpen()) {
+    const left = readiness ? readiness.total - readiness.clear : 0;
+    tone = 'wait'; label = 'Wait';
+    text = `Targets are set. <b>${left}</b> service(s) still carry errors from start-up, and breaking something now would get the wrong one blamed. The break buttons unlock on their own — usually within a minute.`;
+  } else if (!chaosOn && !resetAt) {
+    text = 'Press <b>Break order path</b> to make <code>ledger-service</code> fail — five services should break, and you should get one incident. Or <b>Break both paths</b> to prove two unrelated failures stay two incidents.';
+  } else if (chaosOn && openCount === 0) {
+    const secs = brokeAt ? Math.round((Date.now() - brokeAt) / 1000) : 0;
+    tone = 'wait'; label = 'Wait';
+    text = `Failure injected ${secs}s ago. Nothing to press — the error rate has to build up before it counts as an incident. Typically 25–45s.`;
+  } else if (chaosOn && openCount > 0) {
+    text = el('b-kill').disabled
+      ? 'Read the incident below, then press <b>Stop the failure</b> to start the recovery.'
+      : 'Optional: press <b>Kill Sentinel</b> to prove the incident survives a crash. Otherwise press <b>Stop the failure</b> to start the recovery.';
+  } else if (resetAt && openCount > 0) {
+    tone = 'wait'; label = 'Wait';
+    text = 'Failure stopped. Nothing to press — the incident closes itself after 4 quiet minutes, which is the last thing to watch.';
+  } else {
+    tone = 'calm'; label = 'Done';
+    text = 'Nothing is failing and nothing is open. Press <b>Wipe incidents</b> to clear the history and run it again.';
+  }
+
+  line.className = 'nextup ' + tone;
+  el('ctl-next-k').textContent = label;
+  el('ctl-next-t').innerHTML = text;
+}
+
+/* The rail mirrors the buttons rather than deciding anything itself. Two controls for the same
+   action must never disagree about whether it is available, and the only way to guarantee that is
+   for one of them to have no opinion. */
+function syncRail() {
+  document.querySelectorAll('.step-go[data-act]').forEach((g) => {
+    const btn = el(g.dataset.act);
+    // Availability only. The step's appearance belongs entirely to renderRail, so that the
+    // question "which step am I on" has exactly one answer on screen.
+    g.disabled = btn.disabled;
+  });
+}
+document.querySelectorAll('.step-go[data-act]').forEach((g) => {
+  g.onclick = () => el(g.dataset.act).click();
+});
+
+/* ---------- step detail ----------
+   On an explicit press, never on hover. Hovering a step to read about it and hovering it to press
+   it are the same gesture, so a hover panel opened every time you reached for the control — and
+   this is reference detail that needs to stay put while it is read. */
+function closePops(keep) {
+  document.querySelectorAll('.step-pop').forEach((p) => {
+    if (p === keep) return;
+    p.hidden = true;
+    p.previousElementSibling.setAttribute('aria-expanded', 'false');
+  });
+}
+document.querySelectorAll('.step-i').forEach((b) => {
+  b.onclick = (e) => {
+    e.stopPropagation();
+    const pop = b.nextElementSibling;
+    const opening = pop.hidden;
+    closePops(opening ? pop : null);   // only one open at a time
+    pop.hidden = !opening;
+    b.setAttribute('aria-expanded', String(opening));
+  };
+});
+// Clicking inside the panel must not dismiss it; clicking anywhere else must.
+document.querySelectorAll('.step-pop').forEach((p) => { p.onclick = (e) => e.stopPropagation(); });
+document.addEventListener('click', () => closePops(null));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePops(null); });
+
 el('b-seed').onclick = async (e) => {
-  const r = await action(e.target, '/api/v1/demo/seed', 'Creating objectives');
-  if (r) { seeded = true; settleUntil = Date.now() + SETTLE_MS; refreshButtons(); }
+  const r = await action(e.currentTarget, '/api/v1/demo/seed', 'Creating objectives', 'Creating targets…');
+  if (r) {
+    seeded = true;
+    log('c-ok', `TARGETS SET — ${r.message}. The evaluator now has something to judge every 15s`);
+    refreshButtons();
+  }
 };
 el('b-cascade').onclick = async (e) => {
-  const r = await action(e.target, '/api/v1/demo/chaos?services=ledger-service', 'Breaking ledger-service');
-  if (r) { brokeAt = Date.now(); resetAt = 0; chaosOn = true; startRun(); }
+  const r = await action(e.currentTarget, '/api/v1/demo/chaos?services=ledger-service',
+                         'Breaking ledger-service', 'Breaking ledger-service…');
+  if (r) {
+    brokeAt = Date.now(); resetAt = 0; chaosOn = true; startRun();
+    log('c-sev', 'CHAOS INJECTED into <b>ledger-service</b> — 35% errors, +600ms. Nothing depends on it, so it is the true origin');
+  }
 };
 el('b-both').onclick = async (e) => {
-  const r = await action(e.target, '/api/v1/demo/chaos?services=ledger-service,catalog-service', 'Breaking both leaves');
-  if (r) { brokeAt = Date.now(); resetAt = 0; chaosOn = true; startRun(); }
+  const r = await action(e.currentTarget, '/api/v1/demo/chaos?services=ledger-service,catalog-service',
+                         'Breaking both leaves', 'Breaking both paths…');
+  if (r) {
+    brokeAt = Date.now(); resetAt = 0; chaosOn = true; startRun();
+    log('c-sev', 'CHAOS INJECTED into <b>ledger-service</b> and <b>catalog-service</b> — disconnected trees, so this must stay 2 incidents');
+  }
 };
 
 /* t=0 for the ribbon. Everything after this is measured from the instant failure was injected,
    which is the only reference point a viewer actually cares about. */
 function startRun() {
+  // A new injection is a new episode, so the frozen peak from the previous one is cleared rather
+  // than carried forward and quietly compared against.
+  resetPeak();
   stamps.chaos = Date.now();
   stamps.breach = stamps.incident = stamps.rca = 0;
   killVerdict = '';
   renderRibbon();
 }
 el('b-reset').onclick = async (e) => {
-  const r = await action(e.target, '/api/v1/demo/reset', 'Clearing failure injection');
-  if (r) { chaosOn = false; resetAt = Date.now(); }
+  const r = await action(e.currentTarget, '/api/v1/demo/reset', 'Stopping the failure', 'Clearing the failure…');
+  if (r) {
+    chaosOn = false; resetAt = Date.now();
+    log('c-ok', 'CHAOS CLEARED on all eight services. Breaches keep firing until the errors age out of the window — the incident closes itself after 4 quiet minutes');
+  }
+};
+
+/* Back to nothing. Every bit of run state the page holds is reset alongside the server's, or the
+   screen would keep reporting a run whose incidents no longer exist: the ribbon would still show
+   elapsed times, and the activity feed would renumber the next incident #27. */
+el('b-clear').onclick = async (e) => {
+  const r = await action(e.currentTarget, '/api/v1/demo/clear', 'Wiping incidents', 'Wiping incidents…');
+  if (!r) return;
+  chaosOn = false;
+  resetAt = 0;
+  brokeAt = 0;
+  killedAt = 0;
+  killVerdict = '';
+  incidentsBeforeKill = null;
+  stamps.chaos = stamps.breach = stamps.incident = stamps.rca = 0;
+  focusedIncidentId = null;
+  replay = null;
+  resetPeak();
+  nextNum = 1;
+  for (const k of Object.keys(seen)) seen[k] = {};
+  el('feed').innerHTML = '<div class="empty">Watching…</div>';
+  el('rcacard').hidden = true;
+  callout(null);
+  renderRibbon();
+  refreshButtons();
 };
 
 el('b-regen').onclick = async (e) => {
@@ -1037,7 +2424,7 @@ el('b-regen').onclick = async (e) => {
   // 202 and a redraft on a background thread, so the page goes back to "drafting…" rather than
   // pretending the old text is the new one.
   stamps.rca = 0;
-  await action(e.target, `/api/v1/incidents/${focusedIncidentId}/rca:regenerate`, 'Redrafting root cause');
+  await action(e.currentTarget, `/api/v1/incidents/${focusedIncidentId}/rca:regenerate`, 'Redrafting root cause');
   el('rca-tag').className = 'tag pending';
   el('rca-tag').textContent = 'drafting…';
 };
@@ -1048,8 +2435,8 @@ el('b-kill').onclick = async (e) => {
   incidentsBeforeKill = openCount;
   killVerdict = '';
   killedAt = Date.now();
-  await action(e.target, '/api/v1/demo/kill', 'Halting Sentinel');
-  log('c-sev', `KILLED Sentinel with <b>${incidentsBeforeKill}</b> incident(s) open — Docker will restart it`);
+  await action(e.currentTarget, '/api/v1/demo/kill', 'Halting Sentinel', 'Halting the JVM…');
+  log('c-sev', `KILLED Sentinel with <b>${incidentsBeforeKill}</b> incident(s) open — no graceful shutdown, offsets left uncommitted. Docker will restart it`);
   refreshButtons();
 };
 
@@ -1072,10 +2459,10 @@ function pingStatus() {
   s.classList.add('ping');
 }
 
-const TITLE = 'Sentinel — SLO & Incident Intelligence';
+const TITLE = 'Sentinel · SLO & Incident Intelligence';
 function setTitle(state) {
-  document.title = state.down ? 'Sentinel — Unreachable'
-    : state.open ? `(${state.open}) ${state.open} Incident${state.open > 1 ? 's' : ''} Open — Sentinel`
+  document.title = state.down ? 'Sentinel · Unreachable'
+    : state.open ? `(${state.open}) ${state.open} Incident${state.open > 1 ? 's' : ''} Open · Sentinel`
     : TITLE;
 }
 
@@ -1106,7 +2493,7 @@ el('b-freeze').onclick = () => {
   el('b-freeze').classList.toggle('on', frozen);
   el('freeze-label').textContent = frozen ? 'Resume' : 'Hold the screen';
   setStatus(frozen ? 'hold' : 'live', frozen ? 'Held' : 'Live');
-  setMsg(frozen ? 'Polling paused — the screen will hold still.' : '');
+  setMsg(frozen ? 'Polling paused. The screen will hold still.' : '');
 };
 
 setInterval(refreshButtons, 1000);
@@ -1120,15 +2507,39 @@ async function getJSON(p) {
 
 async function getMetrics() {
   const text = await (await fetch('/actuator/prometheus')).text();
-  const out = {};
+  const out = {}, buckets = {};
   for (const line of text.split('\n')) {
     if (!line || line[0] === '#') continue;
     const m = line.match(/^([a-z_0-9]+)(\{[^}]*\})?\s+(\S+)$/);
     if (!m) continue;
     const v = parseFloat(m[3]);
-    if (isFinite(v)) (out[m[1]] ||= []).push(v);
+    if (!isFinite(v)) continue;
+    (out[m[1]] ||= []).push(v);
+    /* Histogram buckets have to be kept per-le. The name-only lookup below sums every series
+       sharing a name, which for a cumulative histogram adds each bucket to the ones it already
+       contains and yields a number with no meaning whatsoever. */
+    if (m[1].endsWith('_bucket') && m[2]) {
+      const le = m[2].match(/le="([^"]+)"/);
+      if (le) (buckets[m[1]] ||= []).push({ le: le[1] === '+Inf' ? Infinity : parseFloat(le[1]), n: v });
+    }
   }
-  return (n) => (out[n] || []).reduce((a, b) => a + b, 0);
+
+  const fn = (n) => (out[n] || []).reduce((a, b) => a + b, 0);
+
+  /* Bucket-derived quantile: the smallest bucket boundary at or above the true value, which makes
+     every reading an UPPER bound rather than an estimate. Quoted as "p99 <= X" for that reason —
+     the same convention docs/LOAD_TEST_RESULTS.md uses, and the reason application.yml pins an
+     explicit boundary at 15s so "is p99 approaching the interval" is answerable exactly. */
+  fn.quantile = (name, q) => {
+    const b = (buckets[name] || []).slice().sort((x, y) => x.le - y.le);
+    if (!b.length) return null;
+    const total = b[b.length - 1].n;
+    if (!total) return null;
+    const target = q * total;
+    for (const { le, n } of b) if (n >= target) return le;
+    return null;
+  };
+  return fn;
 }
 
 function log(cls, html) {
@@ -1186,27 +2597,33 @@ async function renderRca(incidentId) {
     el('rca-tag').textContent = 'drafting…';
     el('rca-tag').className = 'tag pending';
     el('rca-when').textContent = '';
-    el('rca-live').textContent = 'The incident is open. Its root cause is still being drafted — '
+    el('rca-live').textContent = 'The incident is open. Its root cause is still being drafted, '
       + 'that happens on a separate consumer, so detection never waits for it.';
     el('rca').textContent = el('rca-live').textContent;
     return;
   }
 
-  if (!stamps.rca) { stamps.rca = Date.now(); }
+  if (stamps.chaos && !stamps.rca) {
+    stamps.rca = Date.now();   // same rule as the other marks
+    log('c-res', `ROOT CAUSE drafted +${Math.round((stamps.rca - stamps.chaos) / 1000)}s by <b>${body.fallback ? 'the deterministic fallback (no model configured)' : body.model}</b> — off the detection path, so this delay held nothing up`);
+  }
   card.hidden = false;
   el('rca-live').textContent = body.draft;
   el('rca').textContent = body.draft;
   el('rca-when').textContent = body.generatedAt
     ? 'drafted ' + new Date(body.generatedAt).toLocaleTimeString([], { hour12:false })
     : '';
+  if (replay && body.generatedAt) replay.rcaAt = +new Date(body.generatedAt);
 
   // Provenance is part of the answer, not bookkeeping: a deterministic summary and a model
   // narrative deserve different amounts of trust, and a reader who cannot tell has no way to
   // calibrate. This is also the "works with no API key" claim, made visible.
   const tag = el('rca-tag');
+  // The note explains the fallback, so it belongs only on the fallback.
+  el('rca-ai').hidden = !body.fallback;
   if (body.fallback) {
     tag.className = 'tag fallback';
-    tag.textContent = 'deterministic fallback — no model';
+    tag.textContent = 'deterministic fallback, no model';
   } else {
     tag.className = 'tag model';
     tag.textContent = body.model;
@@ -1215,24 +2632,64 @@ async function renderRca(incidentId) {
 
 /* ---------- the collapse, as something you can see ----------
    The ratio is abstract. A column of pages you did not get is not. */
-function renderCollapse(open) {
-  const pages = [];
-  for (const i of open) {
-    for (const s of [...i.affectedServices].sort()) {
-      pages.push(`PAGE  ${s}  SLO breached`);
-    }
-  }
-  const shown = pages.slice(0, 6);
-  el('pages').innerHTML = pages.length
-    ? shown.map((p) => `<div>${p}</div>`).join('')
-        + (pages.length > shown.length ? `<div class="more">+${pages.length - shown.length} more…</div>` : '')
-    : '<span class="empty">nothing yet</span>';
+/* The comparison that justifies the whole project: the column of pages you would have been sent,
+   beside the one thing you were actually told.
+ *
+ * It renders the open incidents when there are any and the LAST incident otherwise. Blanking both
+ * columns the moment everything resolved was the worst possible moment to go quiet — the ratio
+ * above them kept showing a number while the two panels explaining where that number came from
+ * read "nothing yet", so the one screen that makes the case for the product made it only while you
+ * were mid-outage, and erased itself the instant the outage was handled. A postmortem is exactly
+ * when someone wants to see this. */
+/* The high-water mark of the current episode. Both columns climb with the cascade and then FREEZE
+   at their widest rather than emptying out when the incidents resolve.
+ *
+   Rendering only what is open meant the comparison peaked for about ninety seconds and then threw
+   itself away. The moment someone actually wanted to look at it — after the outage, which is when
+   you review one — both columns read "nothing yet" while the ratio above them still showed a
+   number. Freezing at the peak is also the honest figure: the pages column is the count a
+   conventional setup WOULD have sent, and that total does not shrink because the incident later
+   closed. Reset only by Wipe incidents or by injecting a new failure, both of which start a new
+   episode. */
+let peak = { pages: [], incs: [], at: 0 };
 
-  el('oneinc').innerHTML = open.length
-    ? open.map((i) => `<div class="oneinc">1 incident · origin <b>${i.originService ?? '?'}</b>
-         <div class="meta" style="margin-top:4px">${i.affectedServices.length} services · ${i.breachCount} breaches absorbed</div>
+function resetPeak() { peak = { pages: [], incs: [], at: 0 }; }
+
+function renderCollapse(open, subject) {
+  const live = open.length > 0;
+  const src = live ? open : subject ? [subject] : [];
+
+  const pages = [];
+  for (const i of src) {
+    for (const s of [...i.affectedServices].sort()) pages.push(`PAGE  ${s}  SLO breached`);
+  }
+
+  // Widest wins. Compared on page count rather than incident count because that is the quantity
+  // the column is actually claiming.
+  if (pages.length >= peak.pages.length) peak = { pages, incs: src, at: Date.now() };
+
+  const shown = peak.pages.slice(0, 6);
+  el('pages').innerHTML = peak.pages.length
+    ? shown.map((p) => `<div>${p}</div>`).join('')
+        + (peak.pages.length > shown.length ? `<div class="more">+${peak.pages.length - shown.length} more…</div>` : '')
+    : '<span class="empty">nothing yet</span>';
+  el('pages-foot').textContent = peak.pages.length
+    ? `${peak.pages.length} pages${live ? '' : ' at its peak'}`
+    : '';
+
+  const n = peak.incs.length;
+  el('oneinc').innerHTML = n
+    ? peak.incs.map((i) => `<div class="oneinc${live ? '' : ' past'}">origin <b>${i.originService ?? '?'}</b>
+         <div class="meta" style="margin-top:4px">${i.affectedServices.length} service(s) · ${i.breachCount} breaches absorbed${live ? '' : ' · ' + i.state.toLowerCase()}</div>
        </div>`).join('')
     : '<span class="empty">nothing yet</span>';
+  el('oneinc-foot').textContent = n ? `${n} incident${n === 1 ? '' : 's'}` : '';
+
+  // Says which of the two things you are looking at, so a frozen peak is never mistaken for a live
+  // one just because the panel is full.
+  el('collapse-when').textContent =
+    live ? 'live' : peak.at ? `peak · ${ago(new Date(peak.at).toISOString())}` : '';
+  el('collapse-when').className = 'hwhen' + (live ? ' on' : '');
 }
 
 /* ---------- ribbon ---------- */
@@ -1241,19 +2698,53 @@ function renderRibbon() {
     const node = el(id);
     node.className = 'mark' + (at ? ' hit ' + tone : '');
     node.querySelector('.t').textContent = at
-      ? (from ? '+' + Math.round((at - from) / 1000) + 's' : new Date(at).toLocaleTimeString([], { hour12:false }))
+      ? (from ? '+' + Math.max(0, Math.round((at - from) / 1000)) + 's'
+              : new Date(at).toLocaleTimeString([], { hour12:false }))
       : '—';
   };
-  mark('mk-chaos', stamps.chaos, 0, 'crit');
-  mark('mk-breach', stamps.breach, stamps.chaos, 'crit');
-  mark('mk-inc', stamps.incident, stamps.chaos, 'crit');
-  mark('mk-rca', stamps.rca, stamps.chaos, 'ok');
+  const cap = el('ribcap');
+
+  // 1. A run this page started. The only case where the injection instant is known, because
+  //    pressing the button is what recorded it — nothing server-side stores it.
+  if (stamps.chaos) {
+    cap.className = 'ribcap on';
+    cap.innerHTML = 'This run, measured from the moment failure was injected.';
+    mark('mk-chaos', stamps.chaos, 0, 'crit');
+    mark('mk-breach', stamps.breach, stamps.chaos, 'crit');
+    mark('mk-inc', stamps.incident, stamps.chaos, 'crit');
+    mark('mk-rca', stamps.rca, stamps.chaos, 'ok');
+    return;
+  }
+
+  /* 2. Reconstructed from the last incident, anchored on its first breach.
+   *
+   *    Previously this case rendered four dashes and said nothing, so reloading the page — or
+   *    opening it after someone else drove the demo — threw away the detection-latency story
+   *    entirely, even though every timestamp needed to rebuild it is sitting on the incident. The
+   *    one figure that genuinely cannot be recovered is the injection instant, so mark 1 stays
+   *    blank and the caption says why rather than leaving it to look like a missing value. */
+  if (replay && replay.firstBreachAt) {
+    cap.className = 'ribcap';
+    cap.innerHTML = `Reconstructed from incident <b>${replay.label}</b>, measured from its first breach. `
+      + 'The injection instant is not stored server-side, so mark 1 is blank for a run this page did not start.';
+    mark('mk-chaos', 0, 0, 'crit');
+    mark('mk-breach', replay.firstBreachAt, 0, 'crit');
+    mark('mk-inc', replay.openedAt, replay.firstBreachAt, 'crit');
+    mark('mk-rca', replay.rcaAt, replay.firstBreachAt, 'ok');
+    return;
+  }
+
+  // 3. Nothing has ever run. Say that, rather than showing four dashes that could mean anything.
+  cap.className = 'ribcap';
+  cap.innerHTML = 'Nothing has been broken yet. Press <b>Break order path</b> and these fill in as it happens: '
+    + 'failure injected, detected, correlated into an incident, then explained.';
+  ['mk-chaos', 'mk-breach', 'mk-inc', 'mk-rca'].forEach((id) => mark(id, 0, 0, ''));
 }
 
 /* ---------- focus ----------
    Exactly one thing worth looking at, enforced rather than merely intended. */
 function leadWith(lead) {
-  for (const id of ['ribbon', 'hero', 'rcacard', 'fleetcard']) {
+  for (const id of ['ribbon', 'hero', 'stats', 'rcacard', 'fleetcard']) {
     const node = el(id);
     node.classList.toggle('lead', id === lead);
     node.classList.toggle('recede', lead !== null && id !== lead && id !== 'ribbon');
@@ -1281,10 +2772,11 @@ function callout(kind, label, html) {
 async function tick() {
   if (frozen) return;
 
-  let graph, incidents, m, health = [];
+  let graph, incidents, m, slos, health = [];
   try {
-    [graph, incidents, m] = await Promise.all([
+    [graph, incidents, m, slos] = await Promise.all([
       getJSON('/api/v1/services'), getJSON('/api/v1/incidents?size=50'), getMetrics(),
+      getJSON('/api/v1/slos'),
     ]);
   } catch (e) {
     // Unreachable means two completely different things depending on whether you just pressed
@@ -1295,32 +2787,41 @@ async function tick() {
       const secs = Math.round((Date.now() - killedAt) / 1000);
       callout('down', 'Sentinel is down',
         `Killed <b>${secs}s</b> ago with <b>${incidentsBeforeKill}</b> incident(s) open. `
-        + 'Docker is restarting the container. Postgres, Redpanda and Redis are untouched — the '
+        + 'Docker is restarting the container. Postgres, Redpanda and Redis are untouched, so the '
         + 'incident lives in Postgres, not in the process that was just destroyed.');
       narrate({
         step:3, tone:'crit', title:'Sentinel has been killed',
-        now:`The process was halted <b>${secs}s</b> ago — no graceful shutdown, no draining, offsets left uncommitted mid-flight.`,
-        why:'This is the beat that separates the project from a CRUD app. The incident is in Postgres and survives trivially; the interesting part is the in-flight Kafka message. Its offset was never committed, so on restart the group rebalances and it is delivered again — and the deterministic event id plus the partial unique index make reprocessing a no-op instead of a duplicate incident.',
+        now:`The process was halted <b>${secs}s</b> ago, with no graceful shutdown, no draining, offsets left uncommitted mid-flight.`,
+        why:'This is the beat that separates the project from a CRUD app. The incident is in Postgres and survives trivially; the interesting part is the in-flight Kafka message. Its offset was never committed, so on restart the group rebalances and it is delivered again, and the deterministic event id plus the partial unique index make reprocessing a no-op instead of a duplicate incident.',
       });
       return;
     }
-    el('topology').innerHTML = `<div class="empty">Cannot reach Sentinel — ${e.message}</div>`;
+    el('topology').innerHTML = `<div class="empty">Cannot reach Sentinel: ${e.message}</div>`;
     return;
   }
   try { health = await getJSON('/api/v1/demo/status'); } catch { /* not the demo profile */ }
+  // The gate. One vector query server-side, so polling it every 2s costs one Prometheus query
+  // rather than one per service.
+  try { readiness = await getJSON('/api/v1/demo/readiness'); } catch { readiness = null; }
 
   setStatus('live', 'Live');
   el('status-at').textContent = clock();
   pingStatus();
+
+  // Read up here rather than at the foot of the function, because the stat cards below describe
+  // themselves in terms of them and a card explaining the previous poll's state is worse than one
+  // that says nothing. `seeded` deliberately stays where it is — see the note beside it.
+  sloCount = Array.isArray(slos) ? slos.length : 0;
+  fleetCount = graph.services.length || fleetCount;
 
   // Back up after a kill. The claim is that the count did not move in either direction.
   if (killedAt) {
     const live = incidents.filter((i) => i.state !== 'RESOLVED').length;
     const recovery = Math.round((Date.now() - killedAt) / 1000);
     killVerdict = live === incidentsBeforeKill
-      ? `Back in <b>${recovery}s</b>. <b>${live}</b> incident(s) — the same ones, none lost, none duplicated.`
+      ? `Back in <b>${recovery}s</b>. <b>${live}</b> incident(s), the same ones, none lost, none duplicated.`
       : `Back in <b>${recovery}s</b> with <b>${live}</b> incident(s), against <b>${incidentsBeforeKill}</b> before the kill.`;
-    log('c-res', `RECOVERED after ${recovery}s — ${live} incident(s), was ${incidentsBeforeKill}`);
+    log('c-res', `RECOVERED after ${recovery}s: ${live} incident(s), was ${incidentsBeforeKill}`);
     killedAt = 0;
     refreshButtons();
   }
@@ -1336,23 +2837,75 @@ async function tick() {
   allDown = health.length > 0 && down.size === health.length;
   el('down-warn').hidden = down.size === 0;
 
-  // Numerator and denominator must come from the SAME population, or the headline number is
-  // nonsense: all-time breaches over currently-open incidents once read 561:1 on six incidents,
-  // most of them long resolved. While something is open, report what those open incidents are
-  // absorbing; otherwise fall back to the all-time figure across every incident ever raised.
   const allBreaches = incidents.reduce((a, i) => a + i.breachCount, 0);
   const openBreaches = open.reduce((a, i) => a + i.breachCount, 0);
-  const ratio = openCount ? openBreaches / openCount
-              : incidents.length ? allBreaches / incidents.length : 0;
 
-  el('s-breaches').textContent = openCount ? openBreaches : allBreaches;
+  /* The headline is the BEST single result, not the average.
+   *
+   * An average over every incident ever raised is dominated by the quiet ones — a solo service
+   * that breached once contributes 1:1, and enough of those drag a genuine 130:1 cascade down to
+   * something unremarkable. That is precisely backwards: the claim being made is "this is what
+   * correlation can do", and the evidence for it is the run where it did the most work, not the
+   * mean of every run including the ones with nothing to collapse.
+   *
+   * So: the single incident that absorbed the most breaches. One incident, N breaches, N:1 — and
+   * because it is drawn from the incident record rather than from live state, it survives
+   * resolution and page reloads instead of evaporating with the outage that produced it. */
+  const best = incidents.reduce((m, i) => (i.breachCount > (m ? m.breachCount : 0) ? i : m), null);
+  const ratio = best ? best.breachCount : 0;
+
+  const shownBreaches = openCount ? openBreaches : allBreaches;
+  el('s-breaches').textContent = shownBreaches;
   el('s-open').textContent = openCount;
-  el('s-ratio').textContent = ratio ? `${Math.round(ratio)}:1` : '—';
-  el('tb-inc').textContent = incidents.length;
+  el('s-ratio').textContent = ratio ? `${ratio}:1` : '—';
+  el('s-ratio-h').textContent = best
+    ? `${best.breachCount} breaches became one incident, origin ${best.originService ?? 'unknown'}`
+    : 'breaches absorbed by a single incident; the product, as a number';
 
+  // Total, open and resolved. One total could not tell "nothing is wrong" apart from "nothing has
+  // ever happened", and hid the only one that matters mid-cascade.
+  el('tb-inc').textContent = incidents.length;
+  el('tb-open').textContent = `${openCount} open`;
+  el('tb-res').textContent = `${resolvedCount} resolved`;
+  el('tb-open').classList.toggle('idle', openCount === 0);
+
+  // Dimmed rather than dark when there is nothing to report, so a resting stack does not present
+  // three zeroes as though they were a measured outcome.
+  el('st-breaches').classList.toggle('idle', shownBreaches === 0);
+  el('st-open').classList.toggle('idle', openCount === 0);
+  el('hero').classList.toggle('idle', !ratio);
+
+  /* Evaluation cycle: p99, not the mean.
+   *
+   * The mean here was a cumulative average over every cycle since the process booted, which is the
+   * wrong statistic twice over. It never reflects the present — hundreds of idle cycles dilute the
+   * handful that did real work, so injecting failure barely moved it — and the mean is not the
+   * question anyone has about a scheduled job. The question is whether the slowest cycles still
+   * fit inside the interval, and that is p99 against 15s.
+   *
+   * It is non-zero before Step 1 because the evaluator is scheduled unconditionally: every 15s it
+   * reads the objective list from Postgres, finds none owned by this shard, and returns — and the
+   * timer wraps that in a finally, so the empty pass is recorded like any other. That reading is
+   * the floor, not the workload, and the hint line says so rather than leaving it to be misread as
+   * the cost of evaluating nothing. */
+  const INTERVAL_MS = 15000;
   const cycles = m('sentinel_slo_cycle_duration_seconds_count');
   const cycleMs = cycles ? m('sentinel_slo_cycle_duration_seconds_sum') / cycles * 1000 : 0;
-  el('s-cycle').textContent = cycles ? `${cycleMs.toFixed(0)}ms` : '—';
+  const p99 = m.quantile('sentinel_slo_cycle_duration_seconds_bucket', 0.99);
+  const p99ms = p99 == null || !isFinite(p99) ? null : p99 * 1000;
+
+  el('s-cycle').innerHTML =
+    p99ms == null ? '—'
+    : p99ms < 1000 ? `≤${Math.round(p99ms)}<span class="u">ms</span>`
+    : `≤${(p99ms / 1000).toFixed(1)}<span class="u">s</span>`;
+  el('st-cycle').classList.toggle('idle', !cycles || sloCount === 0);
+  el('s-cycle-h').textContent =
+    !cycles ? 'no cycles recorded yet'
+    : sloCount === 0
+      ? `idle floor: ${cycles} cycles run, none with an objective to judge yet`
+      : p99ms == null
+        ? `${cycles} cycles judging ${sloCount} objectives`
+        : `p99 of ${cycles} cycles judging ${sloCount} objectives · ${(p99ms / INTERVAL_MS * 100).toFixed(1)}% of the 15s interval`;
 
   el('f-1').textContent = `${graph.services.length} services`;
   el('f-2').textContent = `${m('sentinel_metrics_query_duration_seconds_count').toFixed(0)} queries`;
@@ -1367,24 +2920,49 @@ async function tick() {
 
   // The first breach is the moment the count moves, not the moment an incident appears — they are
   // separated by correlation, and the ribbon exists to show that gap.
-  if (!stamps.breach && openBreaches > 0) stamps.breach = Date.now();
-  if (!stamps.incident && openCount > 0) stamps.incident = Date.now();
+  // Only for a run THIS page started. stamps.chaos is set by pressing Break; without it we are
+  // looking at an incident that was already open when the page loaded, and stamping Date.now()
+  // would report "first breach" as the moment you opened the tab rather than when it happened.
+  // The ribbon measures elapsed time, so a fabricated t=0 makes every figure on it wrong.
+  if (stamps.chaos) {
+    if (!stamps.breach && openBreaches > 0) {
+      stamps.breach = Date.now();
+      log('c-sev', `FIRST BREACH detected +${Math.round((stamps.breach - stamps.chaos) / 1000)}s after injection — burn rate crossed 14.4x in both the long and the short window`);
+    }
+    if (!stamps.incident && openCount > 0) stamps.incident = Date.now();
+  }
 
-  renderCollapse(open);
+  // renderCollapse is called further down, once the subject incident is known.
   renderRibbon();
 
   const trees = layout(graph);
-  el('topology').innerHTML = trees.map((levels, i) => `
-    <div class="tree">
-      <div class="tlabel"><b>${i === 0 ? 'Order path' : 'Browse path'}</b> — ${levels.flat().length} services${i === 1 ? ', no dependency edge to the order path' : ''}</div>
-      <div class="chain">
-        ${levels.map((names, li) => `${li > 0 ? '<span class="arrow">→</span>' : ''}<span>${
-          names.map((n) => {
-            const cls = [origins.has(n) ? 'origin' : breaching.has(n) ? 'breach' : '', down.has(n) ? 'down' : ''].join(' ');
-            return `<span class="node ${cls}"><i></i>${n}</span>`;
-          }).join(' ')}</span>`).join('')}
-      </div>
-    </div>`).join('');
+  el('topology').innerHTML =
+    `<div class="pathscap">Arrows point from a service to what it depends on, so a failure at the
+      far right travels back up the chain to the front door. That is the whole reason one broken
+      service produces a screenful of alerts.</div>`
+    + '<div class="paths">' + trees.map((levels, i) => {
+      const p = PATHS[i] || { name:`Path ${i + 1}`, cls:'', note:'' };
+      return `<div class="path ${p.cls}">
+        <div class="phead">
+          <span class="pname">${p.name}</span>
+          <span class="pmeta">${levels.flat().length} services · ${p.note}</span>
+        </div>
+        <div class="chain">
+          ${levels.map((names, li) => `${li > 0 ? '<span class="link" aria-hidden="true"></span>' : ''}<span class="tier">${
+            names.map((n) => {
+              const st = down.has(n) ? STATUS.down : origins.has(n) ? STATUS.cause
+                       : breaching.has(n) ? STATUS.failing : STATUS.healthy;
+              const cls = [origins.has(n) ? 'origin' : breaching.has(n) ? 'breach' : '', down.has(n) ? 'down' : ''].join(' ');
+              // Same words as the table's Status column, from the same source, so hovering a box
+              // and reading its row cannot tell you two different things.
+              return `<span class="node ${cls}" title="${st.label} — ${st.tip}"><i></i>${n}</span>`;
+            }).join('')}</span>`).join('')}
+        </div>
+      </div>`;
+    }).join('') + '</div>';
+
+  // Same order as the topology reads, so the two agree line for line.
+  renderRoster(trees.flatMap((levels) => levels.flat()), breaching, origins, down);
 
   el('incidents').innerHTML = incidents.length ? incidents.map((i) => `
     <div class="inc ${i.state === 'RESOLVED' ? 'RESOLVED' : i.severity}">
@@ -1392,16 +2970,16 @@ async function tick() {
         <span class="title">${seen.num[i.id] || ''} origin <em>${i.originService ?? '?'}</em></span>
         <span class="pill">${i.state}</span>
       </div>
-      <div class="meta">${i.severity} · <b>${i.breachCount}</b> breaches absorbed · ${i.affectedServices.length} service(s) affected</div>
+      <div class="meta">${ago(i.openedAt)} · ${i.severity} · <b>${i.breachCount}</b> breaches absorbed · ${i.affectedServices.length} service(s) affected</div>
       <div class="meta mono">${i.affectedServices.join('  ')}</div>
-    </div>`).join('') : '<div class="empty">No incidents. The fleet is meeting its objectives.</div>';
+    </div>`).join('') : '<div class="empty">No incidents. Every service is meeting its targets.</div>';
 
   for (const i of incidents) {
     const services = [...i.affectedServices].sort().join(',');
     if (!seen.num[i.id]) {
       seen.num[i.id] = '#' + nextNum++;
       if (!firstRender) {
-        log('c-open', `INCIDENT ${seen.num[i.id]} OPENED — ${i.severity}, origin <b>${i.originService}</b>, ${i.affectedServices.length} service(s)`);
+        log('c-open', `INCIDENT ${seen.num[i.id]} OPENED: ${i.severity}, origin <b>${i.originService}</b>, ${i.affectedServices.length} service(s)`);
         // On a shared screen an incident can appear mid-sentence and be missed entirely.
         pulse('hero');
       }
@@ -1417,13 +2995,39 @@ async function tick() {
     seen.state[i.id] = i.state; seen.services[i.id] = services; seen.severity[i.id] = i.severity;
   }
 
-  const focus = [...open].sort((a, b) => b.affectedServices.length - a.affectedServices.length)[0];
+  /* The incident every detail panel below is about. The widest open one if anything is open;
+     otherwise the most recent incident of any state.
+   *
+     Keying these panels on `open` alone meant the breach timeline and the drafted root cause —
+     the two things a postmortem is actually made of — erased themselves the moment the incident
+     resolved. The evidence disappearing at the exact point someone would sit down to read it is
+     backwards, and it made a healthy stack look like a stack that had never done anything. */
+  const focus = [...open].sort((a, b) => b.affectedServices.length - a.affectedServices.length)[0]
+    || [...incidents].sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt))[0];
+  const focusLive = !!focus && focus.state !== 'RESOLVED';
   focusedIncidentId = focus ? focus.id : null;
+
+  renderCollapse(open, focus);
+
   if (focus) {
     try {
       const d = await getJSON('/api/v1/incidents/' + focus.id);
-      const rows = d.timeline.filter((t) => t.kind === 'BREACH').slice(-16).reverse();
-      el('timeline').innerHTML = `<table>
+      const breaches = d.timeline.filter((t) => t.kind === 'BREACH');
+      const rows = breaches.slice(-16).reverse();
+
+      // Anchored on the earliest breach rather than on the incident, because the incident is
+      // opened by correlation and is therefore already downstream of detection.
+      replay = {
+        label: seen.num[focus.id] || '#?',
+        firstBreachAt: breaches.length ? Math.min(...breaches.map((t) => +new Date(t.occurredAt))) : 0,
+        openedAt: +new Date(focus.openedAt),
+        rcaAt: 0,   // filled by renderRca below, if a draft exists
+      };
+
+      el('tl-when').textContent = focusLive
+        ? `${seen.num[focus.id] || ''} open · showing ${rows.length} of ${focus.breachCount} breaches`
+        : `${seen.num[focus.id] || ''} ${focus.state.toLowerCase()} ${ago(focus.openedAt)} · ${rows.length} of ${focus.breachCount} breaches`;
+      el('timeline').innerHTML = rows.length ? `<table>
         <tr><th>Time</th><th>Service</th><th>Objective</th><th>Severity</th><th>Long burn</th><th>Short burn</th></tr>
         ${rows.map((t) => `<tr>
           <td>${new Date(t.occurredAt).toLocaleTimeString([], { hour12:false })}</td>
@@ -1431,12 +3035,15 @@ async function tick() {
           <td class="sev-${t.severity ?? ''}">${t.severity ?? ''}</td>
           <td>${t.longBurnRate != null ? t.longBurnRate.toFixed(0) + 'x' : ''}</td>
           <td>${t.shortBurnRate != null ? t.shortBurnRate.toFixed(0) + 'x' : ''}</td></tr>`).join('')}
-      </table>`;
+      </table>` : '<div class="empty">This incident recorded no individual breach rows.</div>';
       await renderRca(focus.id);
-    } catch { /* resolved between polls */ }
+      renderRibbon();   // again, now that replay carries this incident's timings
+    } catch { /* deleted between polls */ }
   } else {
-    el('timeline').innerHTML = '<div class="empty">No open incident.</div>';
-    el('rca').textContent = 'No open incident. The fleet is meeting its objectives.';
+    replay = null;
+    el('tl-when').textContent = '';
+    el('timeline').innerHTML = '<div class="empty">Nothing has broken yet. Break a service and every breach behind the incident lands here.</div>';
+    el('rca').textContent = 'No incident yet. Break a service and a root-cause hypothesis is drafted automatically.';
     el('rcacard').hidden = true;
   }
 
@@ -1454,14 +3061,14 @@ async function tick() {
 
   if (killVerdict) {
     callout('', 'Survived the kill', killVerdict
-      + ' The offset of any in-flight message was never committed, so it was redelivered on restart —'
+      + ' The offset of any in-flight message was never committed, so it was redelivered on restart,'
       + ' and the deterministic event id and partial unique index made reprocessing a no-op.');
   } else if (separateTrees) {
     callout('', 'Two incidents, on purpose',
       `<b>${live.length} unrelated failures</b>, kept apart: ${live.map((i) => `<code>${i.originService}</code>`).join(' and ')}.
        There is no dependency edge between these groups, so they are not merged. This is the half of
        the proof a single cascade cannot show — a system that grouped everything broken at the same
-       moment would report one incident spanning the fleet, which is a confident and useless answer.`);
+       moment would report one incident spanning everything, which is a confident and useless answer.`);
   } else if (live.length === 1 && live[0].breachCount > live[0].affectedServices.length) {
     const i = live[0];
     callout('', 'One incident, not ' + i.affectedServices.length,
@@ -1477,14 +3084,38 @@ async function tick() {
   if (!el('rcacard').hidden && openCount > 0 && stamps.rca) leadWith('rcacard');
   else if (openCount > 0) leadWith('hero');
   else if (chaosOn) leadWith('fleetcard');
+  // During the settle wait nothing has happened yet this session, so every number below the deck
+  // is either from previous runs or from the seeded history. Left at full strength they answer a
+  // question nobody has asked, and the collapse ratio in particular reads as a live result when
+  // it is an all-time average. Lead with the services instead: they are the thing targets were
+  // just set on, and they are the only panel down there that is actually about right now.
+  else if (seeded && !chaosOn && !gateOpen()) leadWith('fleetcard');
   else leadWith(null);
+
+  /* Step 1 is done when objectives EXIST, which is a fact, not when incidents exist, which was a
+     guess — and a bad one. `incidents` includes every RESOLVED row, and DemoDataSeeder writes 30
+     days of synthetic resolved history on first boot, so `incidents.length` is non-zero on a
+     completely healthy stack. The old line therefore set chaosOn on every single page load and
+     stamped brokeAt as "now", which put a fresh refresh into "Failing — not yet detected" and had
+     it report a service erroring for N seconds while nothing was broken at all.
+
+     Nothing here infers that chaos is running. The page starts from what it can prove — the SLOs
+     that exist and the incidents that are open — and chaos becomes true only when you press a
+     button that causes it. */
+  seeded = Array.isArray(slos) && slos.length > 0;
 
   if (firstRender) {
     firstRender = false;
-    if (incidents.length) { seeded = true; chaosOn = true; brokeAt = Date.now(); }
-    log('', incidents.length ? `watching — ${incidents.length} existing incident(s)` : 'watching — fleet healthy');
-    refreshButtons();
+    log('', openCount ? `watching: ${openCount} open incident(s)`
+        : seeded ? 'watching: targets defined, all services healthy'
+        : 'watching: no objectives defined yet');
   }
+
+  /* Every poll, not just the first and not just after a press. The readiness gate, the open count
+     and the "wait N seconds" line all move on their own, so anything derived from them has to be
+     recomputed on the same cadence or it silently reports the state of two minutes ago. `busy`
+     inside refreshButtons keeps this from stealing a button out from under a request in flight. */
+  refreshButtons();
 }
 
 tick();
