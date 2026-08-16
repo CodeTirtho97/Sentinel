@@ -293,9 +293,7 @@ public class DemoControlController {
 
         log.info("demo clear: removed {} incident(s), window clean: {}", removed, after.ready());
         return new ActionResult(
-                ok,
-                "Cleared %d incident(s). Reliability targets are untouched.".formatted(removed) + caveat,
-                details);
+                ok, "Cleared %d incident(s). Reliability targets are untouched.".formatted(removed) + caveat, details);
     }
 
     /**
